@@ -64,7 +64,6 @@ static GBitmap *bitmap_tick;
 int number_selected = 0;
 
 AppTimer *timer;
-bool autoselect;
 
 // Key values for AppMessage Dictionary
 #define KEY_ARRIVALS 0
@@ -72,27 +71,17 @@ bool autoselect;
 #define KEY_CHECK_PLATFORM 2
 #define KEY_JS_READY 3
 #define KEY_NEAREST_FAV 4
+#define KEY_SAVE_SETTINGS 5
 bool js_ready = false;
 bool js_outbox_waiting = false;
   
 // Persistent Storage Keys
 #define STORAGE_KEY_AUTOSELECT 1  
+#define STORAGE_KEY_VERSION 2
 #define STORAGE_KEY_PLATFORM 100
-
-// *****************************************************************************************************
-// CUSTOM
-// *****************************************************************************************************
-
-static void add_platform(char number[MAX_PL_NUM_LENGTH], char name[MAX_NAME_LENGTH], char road[MAX_ROAD_LENGTH]) {
-  if (num_platforms < MAX_PLATFORMS) {
-    snprintf(platforms[num_platforms].Number,MAX_PL_NUM_LENGTH,"%s",number);
-    snprintf(platforms[num_platforms].Name,MAX_NAME_LENGTH,"%s",name);
-    snprintf(platforms[num_platforms].Road,MAX_ROAD_LENGTH,"%s",road);
-    // save platform
-    persist_write_data(STORAGE_KEY_PLATFORM+num_platforms, &platforms[num_platforms], sizeof(platforms[num_platforms]));
-    num_platforms++;
-  }
-}
+#define CURRENT_STORAGE_VERSION 1
+bool autoselect = false;
+bool data_exists = false;
 
 // *****************************************************************************************************
 // MESSAGES
@@ -151,7 +140,6 @@ static void process_arrivals(char *source) {
   retries=0;
   redraw_arrivals();
 }
-
 
 static void fetch_nearest_platforms(char *favourites) {
   #define get_nearest_favourite favourites[0]
@@ -231,6 +219,68 @@ static void process_check_platform(char *source) {
   layer_mark_dirty(number_layer);
 }
 
+static void process_settings(char *source) {
+  char bus[4][MAX_NAME_LENGTH+1];
+  uint s=0; // source offset
+  uint c=0; // column (0=number, 1=name, 3=road)
+//  uint32_t version=0;
+  num_platforms=0;
+  char plats[(MAX_PL_NUM_LENGTH+1)*MAX_PLATFORMS]="";
+  
+  while (source[s]) {
+    uint d=0; // destination offset
+    while (source[s] && source[s]!=';' && source[s]!='|' && d<MAX_NAME_LENGTH) {
+      bus[c][d++]=source[s++];
+    }
+    bus[c++][d]=0;
+    if (source[s]=='|') {
+      int key = atoi(bus[0]);
+      if (key>STORAGE_KEY_PLATFORM) key = STORAGE_KEY_PLATFORM;
+      switch (key) {
+        case STORAGE_KEY_VERSION:     
+//          version = atoi(bus[1]);       
+          break;
+        case STORAGE_KEY_AUTOSELECT:  autoselect=(atoi(bus[1])==1);  break;
+        case STORAGE_KEY_PLATFORM:
+          snprintf(platforms[num_platforms].Number,MAX_PL_NUM_LENGTH,"%s",bus[1]);
+          snprintf(platforms[num_platforms].Name,MAX_NAME_LENGTH,"%s",bus[2]);
+          snprintf(platforms[num_platforms].Road,MAX_ROAD_LENGTH,"%s",bus[3]);
+          strcat(plats,platforms[num_platforms].Number);
+          strcat(plats,";");
+          num_platforms++;
+          break;
+        default:
+          APP_LOG(APP_LOG_LEVEL_INFO, "unknown setting key:%s; value:%s", bus[0], bus[1]);
+          break;
+      }
+      c=0;
+    }
+    s++;
+  }
+
+  if (num_platforms && autoselect) fetch_nearest_platforms(plats);
+  menu_layer_set_selected_index(menu_layer, MenuIndex(0,0), MenuRowAlignTop, false);
+  menu_layer_reload_data(menu_layer);
+}
+
+static void save_settings_to_phone() {
+  DictionaryIterator *iter;
+  char size=app_message_outbox_size_maximum();
+  char message[size];
+  int len=0;
+  
+  app_message_outbox_begin(&iter);
+  len+=snprintf(message+len,size-len,"%d;%d|",(int)STORAGE_KEY_VERSION, (int)CURRENT_STORAGE_VERSION);
+  len+=snprintf(message+len,size-len,"%d;%d|",(int)STORAGE_KEY_AUTOSELECT, (int)autoselect);
+  for (int a=0; a<num_platforms; a++) {
+    len+=snprintf(message+len,size-len,"%d;%s;%s;%s|",STORAGE_KEY_PLATFORM+a,platforms[a].Number,platforms[a].Name,platforms[a].Road);
+  }
+  
+  dict_write_cstring(iter, KEY_SAVE_SETTINGS, message);
+ 
+  if (js_ready) app_message_outbox_send(); else js_outbox_waiting=true;
+}
+
 // Called when a message is received from PebbleKitJS
 static void inbox_received_handler(DictionaryIterator *received, void *context) {
   // Read first item
@@ -249,6 +299,11 @@ static void inbox_received_handler(DictionaryIterator *received, void *context) 
         if (js_outbox_waiting) {
           app_message_outbox_send();
           js_outbox_waiting=false;
+        }
+        if (t->value->cstring[0]!='\0') {
+          if (!data_exists) process_settings(t->value->cstring); // Process the settings which were sent from the phone to the watch.
+        } else {
+          if (data_exists) save_settings_to_phone(); // No settings saved on phone, so send watch settings to phone.
         }
         break;
       case KEY_NEAREST_FAV:
@@ -298,6 +353,21 @@ static void outbox_failed_handler(DictionaryIterator *failed, AppMessageResult r
     APP_LOG(APP_LOG_LEVEL_ERROR, "Outbox send failed, reason:%s",translate_error(reason));
 }
 
+// *****************************************************************************************************
+// CUSTOM
+// *****************************************************************************************************
+
+static void add_platform(char number[MAX_PL_NUM_LENGTH], char name[MAX_NAME_LENGTH], char road[MAX_ROAD_LENGTH]) {
+  if (num_platforms < MAX_PLATFORMS) {
+    snprintf(platforms[num_platforms].Number,MAX_PL_NUM_LENGTH,"%s",number);
+    snprintf(platforms[num_platforms].Name,MAX_NAME_LENGTH,"%s",name);
+    snprintf(platforms[num_platforms].Road,MAX_ROAD_LENGTH,"%s",road);
+    // save platform
+    persist_write_data(STORAGE_KEY_PLATFORM+num_platforms, &platforms[num_platforms], sizeof(platforms[num_platforms]));
+    num_platforms++;
+    save_settings_to_phone();
+  }
+}
 // *****************************************************************************************************
 // MENUS
 // *****************************************************************************************************
@@ -392,10 +462,12 @@ static void menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
       num_platforms--;
       persist_delete(STORAGE_KEY_PLATFORM+num_platforms);
       menu_layer_reload_data(menu_layer);
+      save_settings_to_phone();
       break;
     case 3: // options
       persist_write_bool(STORAGE_KEY_AUTOSELECT, autoselect=!autoselect);
       menu_layer_reload_data(menu_layer);
+      save_settings_to_phone();
       break;
   }
 }
@@ -712,23 +784,24 @@ void init(void) {
 	app_message_register_outbox_failed(outbox_failed_handler);
 	app_message_open(app_message_inbox_size_maximum(), app_message_outbox_size_maximum());
   
+  // Read stored data from watch.
   num_platforms=0;
+  uint32_t stored_version = persist_read_int(STORAGE_KEY_VERSION); // defaults to 0 if key is missing.
+  autoselect=persist_read_bool(STORAGE_KEY_AUTOSELECT);
   char plats[(MAX_PL_NUM_LENGTH+1)*MAX_PLATFORMS]="";
   while (persist_exists(STORAGE_KEY_PLATFORM+num_platforms) && num_platforms<MAX_PLATFORMS) {
     persist_read_data(STORAGE_KEY_PLATFORM+num_platforms, &platforms[num_platforms], sizeof(platforms[num_platforms]));
     strcat(plats,platforms[num_platforms].Number);
     strcat(plats,";");
     num_platforms++;
-  }
-  autoselect=persist_read_bool(STORAGE_KEY_AUTOSELECT);
-  if (!num_platforms) {
-    //add_platform("45166","Birchs Rd near Glenwood Dr","Birchs Rd - W");
-    //add_platform("14704","Christchurch Hospital","Tuam St - S");
-  } else if (autoselect) {
-    fetch_nearest_platforms(plats);
-  }
-  
+  }    
+  data_exists = (num_platforms>0 || persist_exists(STORAGE_KEY_AUTOSELECT) );
+  if (num_platforms && autoselect) fetch_nearest_platforms(plats);
+  if (stored_version < CURRENT_STORAGE_VERSION) persist_write_int(STORAGE_KEY_VERSION, CURRENT_STORAGE_VERSION);
+
   window_stack_push(window_menu, true /* Animated */);
+  
+  APP_LOG(APP_LOG_LEVEL_INFO, "sizeof arrivals:%d, outbox:%d", (int)sizeof(arrivals), (int)app_message_outbox_size_maximum());
 }
 
 void deinit(void) {

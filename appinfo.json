@@ -4,7 +4,8 @@
         "KEY_CHECK_PLATFORM": 2,
         "KEY_JS_READY": 3,
         "KEY_LOCATION": 1,
-        "KEY_NEAREST_FAV": 4
+        "KEY_NEAREST_FAV": 4,
+        "KEY_SAVE_SETTINGS": 5
     },
     "capabilities": [
         "location"
@@ -15,18 +16,9 @@
     "resources": {
         "media": [
             {
-                "file": "images/tick.png",
-                "name": "IMAGE_TICK",
-                "type": "png"
-            },
-            {
-                "file": "images/right.png",
-                "name": "IMAGE_RIGHT",
-                "type": "png"
-            },
-            {
-                "file": "images/down.png",
-                "name": "IMAGE_DOWN",
+                "file": "images/Image1.png",
+                "menuIcon": true,
+                "name": "IMAGE_APP_ICON",
                 "type": "png"
             },
             {
@@ -35,9 +27,18 @@
                 "type": "png"
             },
             {
-                "file": "images/Image1.png",
-                "menuIcon": true,
-                "name": "IMAGE_APP_ICON",
+                "file": "images/down.png",
+                "name": "IMAGE_DOWN",
+                "type": "png"
+            },
+            {
+                "file": "images/right.png",
+                "name": "IMAGE_RIGHT",
+                "type": "png"
+            },
+            {
+                "file": "images/tick.png",
+                "name": "IMAGE_TICK",
                 "type": "png"
             }
         ]
@@ -46,7 +47,7 @@
     "shortName": "Chch Bus",
     "uuid": "6094e32b-cc6b-40cb-8761-2dc79d8ee554",
     "versionCode": 1,
-    "versionLabel": "1.0",
+    "versionLabel": "1.1",
     "watchapp": {
         "watchface": false
     }

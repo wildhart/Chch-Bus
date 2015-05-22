@@ -13,10 +13,8 @@ var nearest_limit=10;
 var location_reason=null;
 
 Pebble.addEventListener('ready', function(e) {
-  Pebble.sendAppMessage({'KEY_JS_READY': ""});
-  //var value = localStorage.getItem("autoload");
-  //console.log("autoload="+value);
-  //localStorage.setItem("autoload", "true");
+  var settings=localStorage.getItem("settings");
+  Pebble.sendAppMessage({'KEY_JS_READY': (settings) ? settings : ""});
 });
 
 // Called when incoming message from the Pebble is received
@@ -45,6 +43,9 @@ Pebble.addEventListener("appmessage",	function(e) {
       } else {
         check_platform(e.payload.KEY_CHECK_PLATFORM);
       }
+    } else if (p=="KEY_SAVE_SETTINGS") {
+      console.log("KEY_SAVE_SETTINGS: " + JSON.stringify(e.payload));
+      localStorage.setItem('settings',e.payload.KEY_SAVE_SETTINGS);
     } else {
       console.log("Received unknown message: " + JSON.stringify(e.payload));
     }
