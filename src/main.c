@@ -22,10 +22,28 @@ struct arrival {
   char Eta[MAX_ETA_LENGTH+1];
 } arrivals[MAX_ARRIVALS];
 int num_arrivals=0;
+int num_arrivals_favourites=0;
+int num_arrivals_visible=0;
 
-#define NUM_MENU_SECTIONS 4
-#define NUM_MENU_ITEMS_ADD 2
-#define NUM_MENU_ITEMS_OPTIONS 1
+enum { // main menu structure
+  MENU_SECTION_FAVS,
+  MENU_SECTION_ADD,
+  MENU_SECTION_OPTIONS,
+  MENU_SECTION_REMOVE,
+  
+  NUM_MENU_SECTIONS,
+  
+  MENU_ADD_NUMBER=MENU_SECTION_ADD*100,
+  MENU_ADD_LOCATION,
+  NUM_MENU_ITEMS_ADD=2,
+  
+  MENU_OPTIONS_AUTO=MENU_SECTION_OPTIONS*100,
+  MENU_OPTIONS_ROUTES,
+  NUM_MENU_ITEMS_OPTIONS=2
+};
+#define MENU_SECTION_CELL (cell_index->section * 100 + cell_index->row)
+#define MENU_HEIGHT_SINGLE 30
+#define MENU_HEIGHT_DOUBLE 44
 static Window *window_menu;
 static MenuLayer *menu_layer;
 
@@ -45,15 +63,20 @@ struct nearest {
   char Name[MAX_NAME_LENGTH+1];
   char Road[MAX_ROAD_LENGTH+1];
 } nearest[MAX_PLATFORMS]; 
+int num_nearest=0;
+struct route {
+  char Route[MAX_ROUTE_LENGTH+1];
+  char Destination[MAX_DESTINATION_LENGTH+1];
+} *routes;
+int num_routes=0;
 static Window *window_menu_nearest;
 static MenuLayer *menu_layer_nearest;
-int num_nearest=0;
 
 #define NUM_DIGITS 5
 #define NUMBER_OFFSET 24
 #define NUMBER_ORIGIN 2 // Action bar layer =20px wide
 #define valid_selector() (nearest[0].Number[0]!='\0')
-char *number_selector = "50529";
+char *number_selector = "50529"; // Central station
 static Window *window_number;
 static Layer *number_layer;
 ActionBarLayer *action_bar_layer;
@@ -61,6 +84,9 @@ static GBitmap *bitmap_up;
 static GBitmap *bitmap_down;
 static GBitmap *bitmap_right;
 static GBitmap *bitmap_tick;
+static GBitmap *bitmap_option_tick;
+static GBitmap *bitmap_option_box;
+#define OPTION_TICK_SIZE 16
 int number_selected = 0;
 
 AppTimer *timer;
@@ -72,15 +98,23 @@ AppTimer *timer;
 #define KEY_JS_READY 3
 #define KEY_NEAREST_FAV 4
 #define KEY_SAVE_SETTINGS 5
+#define KEY_GET_ROUTES 6
 bool js_ready = false;
 bool js_outbox_waiting = false;
+int last_message;
+void (*next_message_callback)(void);
   
 // Persistent Storage Keys
 #define STORAGE_KEY_AUTOSELECT 1  
 #define STORAGE_KEY_VERSION 2
+#define STORAGE_KEY_FAVOURITE_ROUTES_SHOW 3
+#define STORAGE_KEY_FAVOURITE_ROUTES_LIST 4
 #define STORAGE_KEY_PLATFORM 100
-#define CURRENT_STORAGE_VERSION 1
+#define CURRENT_STORAGE_VERSION 2
 bool autoselect = false;
+bool favourite_routes_show = false;
+#define MAX_FAV_ROUTES_LIST_LENGTH 32
+char favourite_routes_list[MAX_FAV_ROUTES_LIST_LENGTH+1];
 bool data_exists = false;
 
 // *****************************************************************************************************
@@ -90,9 +124,14 @@ bool data_exists = false;
 static void redraw_arrivals() {
   // Set correct size of arrivals list and redraw  
   GRect bounds = layer_get_frame(scroll_layer_get_layer(scroll_layer));
-  scroll_layer_set_content_size(scroll_layer, GSize(bounds.size.w, PLATFORM_HEIGHT+ARRIVAL_HEIGHT*(num_arrivals+1)));
-  layer_set_frame(arrivals_layer, GRect(0,0, bounds.size.w, PLATFORM_HEIGHT+ARRIVAL_HEIGHT*(num_arrivals+1)));
+  uint height=num_arrivals_visible==1 ? 168-PLATFORM_HEIGHT-16 : (ARRIVAL_HEIGHT+ARRIVAL_HEIGHT*(num_arrivals_visible>4 ? num_arrivals_visible : num_arrivals_visible<<1));
+  scroll_layer_set_content_size(scroll_layer, GSize(bounds.size.w, PLATFORM_HEIGHT+height));
+  layer_set_frame(arrivals_layer, GRect(0,0, bounds.size.w, PLATFORM_HEIGHT+height));
   layer_mark_dirty(scroll_layer_get_layer(scroll_layer));
+}
+
+static void send_message_when_phone_ready() {
+  if (js_ready) app_message_outbox_send(); else js_outbox_waiting=true;
 }
 
 // Write message to buffer & send
@@ -102,10 +141,10 @@ static void fetch_arrivals() {
     app_message_outbox_begin(&iter);
     
     //APP_LOG(APP_LOG_LEVEL_INFO, "Sending Platform %s.", platforms[platform].Number);
-    Tuplet value = TupletCString(KEY_ARRIVALS, platforms[platform].Number);
+    Tuplet value = TupletCString(last_message=KEY_ARRIVALS, platforms[platform].Number);
     dict_write_tuplet(iter, &value);
    
-    if (js_ready) app_message_outbox_send(); else js_outbox_waiting=true;
+    send_message_when_phone_ready();
     fetching = true;
     retries++;
     redraw_arrivals();
@@ -115,11 +154,19 @@ static void fetch_arrivals() {
   }
 }
 
+static char* check_if_favourite_route(char *route) {
+  char rte[MAX_ROUTE_LENGTH+3];
+  snprintf(rte,MAX_ROUTE_LENGTH+3,",%s,",route);
+  return strstr(favourite_routes_list,rte); // pointer to substring if true, NULL if false
+}
+
 static void process_arrivals(char *source) {
   char bus[3][MAX_NAME_LENGTH+1];
   uint s=0; // source offset
   uint c=0; // column (0=route, 1=destination, 2 = eta)
   num_arrivals=0;
+  num_arrivals_favourites=0;
+  num_arrivals_visible=0;
   while (source[s] && num_arrivals<MAX_ARRIVALS) {
     uint d=0; // destination offset
     while (source[s] && source[s]!=';' && d<MAX_NAME_LENGTH) {
@@ -132,10 +179,12 @@ static void process_arrivals(char *source) {
       strncpy(arrivals[num_arrivals].Destination, bus[1], MAX_DESTINATION_LENGTH);
       strncpy(arrivals[num_arrivals].Eta, bus[2], MAX_ETA_LENGTH);
       // APP_LOG(APP_LOG_LEVEL_INFO, "route:%s; dest:%s; eta:%s", arrivals[num_arrivals].Route,arrivals[num_arrivals].Destination,arrivals[num_arrivals].Eta);
+      if (check_if_favourite_route(arrivals[num_arrivals].Route)) num_arrivals_favourites++; // there is a favourite, so only show favourites
       num_arrivals++;
       c=0;
     }
   }
+  num_arrivals_visible = (favourite_routes_show && num_arrivals_favourites) ? num_arrivals_favourites : num_arrivals;
   fetching=false;
   retries=0;
   redraw_arrivals();
@@ -147,10 +196,10 @@ static void fetch_nearest_platforms(char *favourites) {
   DictionaryIterator *iter;
   app_message_outbox_begin(&iter);
   
-  Tuplet value = get_nearest_favourite ? TupletCString(KEY_LOCATION, favourites) : TupletInteger(KEY_LOCATION, MAX_PLATFORMS);
+  Tuplet value = get_nearest_favourite ? TupletCString(last_message=KEY_LOCATION, favourites) : TupletInteger(last_message=KEY_LOCATION, MAX_PLATFORMS);
   dict_write_tuplet(iter, &value);
  
-  if (js_ready) app_message_outbox_send(); else js_outbox_waiting=true;
+  send_message_when_phone_ready();
   
   if (!get_nearest_favourite) {
     num_nearest=1;
@@ -189,10 +238,10 @@ static void check_platform(char *platform) {
   DictionaryIterator *iter;
   app_message_outbox_begin(&iter);
   
-  Tuplet value = TupletCString(KEY_CHECK_PLATFORM, platform);
+  Tuplet value = TupletCString(last_message=KEY_CHECK_PLATFORM, platform);
   dict_write_tuplet(iter, &value);
  
-  if (js_ready) app_message_outbox_send(); else js_outbox_waiting=true;
+  send_message_when_phone_ready();
 }
 
 static void process_check_platform(char *source) {
@@ -219,6 +268,53 @@ static void process_check_platform(char *source) {
   layer_mark_dirty(number_layer);
 }
 
+static void fetch_routes_for_platforms(char *platforms) {
+  DictionaryIterator *iter;
+  app_message_outbox_begin(&iter);
+  
+  Tuplet value = TupletCString(last_message=KEY_GET_ROUTES, platforms);
+  dict_write_tuplet(iter, &value);
+ 
+  send_message_when_phone_ready();
+}
+
+static void process_routes(char *source) {
+  const uint columns = 2;
+  char bus[columns][MAX_NAME_LENGTH+1];
+  uint s=0; // source offset
+  uint c=0; // column (0=number, 1=name, 3=road)
+  num_routes=0;
+  
+  // first count number of routes to allocate enough memory.
+  while (source[s]) {
+    if (source[s++]==';') num_routes++; // this will counnt twice the number of routes
+  }
+  
+  struct route *r=malloc( (num_routes>>1) * sizeof(struct route)); // >> 1 halves the number of routes.
+  routes = r;
+  
+  num_routes=0;
+  s=0;
+  while (source[s]) {
+    uint d=0; // destination offset
+    while (source[s] && source[s]!=';' && d<MAX_NAME_LENGTH) {
+      bus[c][d++]=source[s++];
+    }
+    bus[c++][d]=0;
+    s++;
+    if (c==columns) {
+      strncpy(r[num_routes].Route, bus[0], MAX_ROUTE_LENGTH);
+      strncpy(r[num_routes].Destination, bus[1], MAX_DESTINATION_LENGTH);
+      //APP_LOG(APP_LOG_LEVEL_INFO, "route:%s; dest:%s;", r[num_routes].Route,r[num_routes].Destination);
+      //APP_LOG(APP_LOG_LEVEL_INFO, "route:%s; dest:%s;", bus[0],bus[1]);
+      num_routes++;
+      c=0;
+    }
+  }
+  menu_layer_reload_data(menu_layer_nearest);
+}
+
+  
 static void process_settings(char *source) {
   char bus[4][MAX_NAME_LENGTH+1];
   uint s=0; // source offset
@@ -240,7 +336,9 @@ static void process_settings(char *source) {
         case STORAGE_KEY_VERSION:     
 //          version = atoi(bus[1]);       
           break;
-        case STORAGE_KEY_AUTOSELECT:  autoselect=(atoi(bus[1])==1);  break;
+        case STORAGE_KEY_AUTOSELECT: autoselect=(atoi(bus[1])==1);  break;
+        case STORAGE_KEY_FAVOURITE_ROUTES_SHOW: favourite_routes_show=(atoi(bus[1])==1);  break;
+        case STORAGE_KEY_FAVOURITE_ROUTES_LIST: snprintf(favourite_routes_list,MAX_FAV_ROUTES_LIST_LENGTH,"%s",bus[1]); break;
         case STORAGE_KEY_PLATFORM:
           snprintf(platforms[num_platforms].Number,MAX_PL_NUM_LENGTH,"%s",bus[1]);
           snprintf(platforms[num_platforms].Name,MAX_NAME_LENGTH,"%s",bus[2]);
@@ -272,13 +370,15 @@ static void save_settings_to_phone() {
   app_message_outbox_begin(&iter);
   len+=snprintf(message+len,size-len,"%d;%d|",(int)STORAGE_KEY_VERSION, (int)CURRENT_STORAGE_VERSION);
   len+=snprintf(message+len,size-len,"%d;%d|",(int)STORAGE_KEY_AUTOSELECT, (int)autoselect);
+  len+=snprintf(message+len,size-len,"%d;%d|",(int)STORAGE_KEY_FAVOURITE_ROUTES_SHOW, (int)favourite_routes_show);
+  len+=snprintf(message+len,size-len,"%d;%s|",(int)STORAGE_KEY_FAVOURITE_ROUTES_LIST, favourite_routes_list);
   for (int a=0; a<num_platforms; a++) {
     len+=snprintf(message+len,size-len,"%d;%s;%s;%s|",STORAGE_KEY_PLATFORM+a,platforms[a].Number,platforms[a].Name,platforms[a].Road);
   }
   
   dict_write_cstring(iter, KEY_SAVE_SETTINGS, message);
  
-  if (js_ready) app_message_outbox_send(); else js_outbox_waiting=true;
+  send_message_when_phone_ready();
 }
 
 // Called when a message is received from PebbleKitJS
@@ -294,6 +394,7 @@ static void inbox_received_handler(DictionaryIterator *received, void *context) 
       case KEY_ARRIVALS:        process_arrivals(t->value->cstring); break;
       case KEY_LOCATION:        process_platforms(t->value->cstring); break;
       case KEY_CHECK_PLATFORM:  process_check_platform(t->value->cstring); break;
+      case KEY_GET_ROUTES:      process_routes(t->value->cstring); break;
       case KEY_JS_READY:
         js_ready=true;
         if (js_outbox_waiting) {
@@ -315,7 +416,7 @@ static void inbox_received_handler(DictionaryIterator *received, void *context) 
         }
         break;
       default:
-        APP_LOG(APP_LOG_LEVEL_ERROR, "Key %d not recognized!", (int)t->key);
+        APP_LOG(APP_LOG_LEVEL_ERROR, "Unknown key: %d data:%s", (int)t->key, t->value->cstring);
         break;
     }
 
@@ -346,12 +447,29 @@ char *translate_error(AppMessageResult result) {
 // Called when an incoming message from PebbleKitJS is dropped
 static void inbox_dropped_handler(AppMessageResult reason, void *context) {	
   APP_LOG(APP_LOG_LEVEL_ERROR, "Message dropped, reason:%s",translate_error(reason));
+  if (next_message_callback) {
+    next_message_callback();
+    next_message_callback=NULL;
+  }
 }
 
 // Called when PebbleKitJS does not acknowledge receipt of a message
 static void outbox_failed_handler(DictionaryIterator *failed, AppMessageResult reason, void *context) {
-    APP_LOG(APP_LOG_LEVEL_ERROR, "Outbox send failed, reason:%s",translate_error(reason));
+  APP_LOG(APP_LOG_LEVEL_ERROR, "Outbox send failed, reason:%s",translate_error(reason));
+  if (next_message_callback) {
+    next_message_callback();
+    next_message_callback=NULL;
+  }
 }
+// Called when PebbleKitJS does not acknowledge receipt of a message
+static void outbox_sent_handler(DictionaryIterator *sent, void *context) {
+  //APP_LOG(APP_LOG_LEVEL_INFO, "Message received: %d", next_message_callback ? 1 : 0);
+  if (next_message_callback) {
+    next_message_callback();
+    next_message_callback=NULL;
+  }
+}
+
 
 // *****************************************************************************************************
 // CUSTOM
@@ -382,10 +500,10 @@ static uint16_t menu_get_num_sections_callback(MenuLayer *menu_layer, void *data
 // You can also dynamically add and remove items using this
 static uint16_t menu_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
   switch (section_index) {
-    case 0:
-    case 2: return num_platforms;
-    case 1: return NUM_MENU_ITEMS_ADD;
-    case 3: return NUM_MENU_ITEMS_OPTIONS;
+    case MENU_SECTION_FAVS:
+    case MENU_SECTION_REMOVE: return num_platforms;
+    case MENU_SECTION_ADD: return NUM_MENU_ITEMS_ADD;
+    case MENU_SECTION_OPTIONS: return NUM_MENU_ITEMS_OPTIONS;
     default:
       return 0;
   }
@@ -399,20 +517,20 @@ static int16_t menu_get_header_height_callback(MenuLayer *menu_layer, uint16_t s
 
 // A callback is used to specify the height of each menu cell
 static int16_t menu_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
-  if (cell_index->section == 1) {
-    return 30;
+  if (cell_index->section == MENU_SECTION_ADD) {
+    return MENU_HEIGHT_SINGLE;
   }
-  return 44;
+  return MENU_HEIGHT_DOUBLE;
 }
 
 // Here we draw what each header is
 static void menu_draw_header_callback(GContext* ctx, const Layer *cell_layer, uint16_t section_index, void *data) {
   // Determine which section we're working with
   switch (section_index) {
-    case 0:  menu_cell_basic_header_draw(ctx, cell_layer, "Favourite stops"); break;
-    case 1:  menu_cell_basic_header_draw(ctx, cell_layer, "Add stop"); break;
-    case 2:  menu_cell_basic_header_draw(ctx, cell_layer, "Remove stop"); break;
-    case 3:  menu_cell_basic_header_draw(ctx, cell_layer, "Options"); break;
+    case MENU_SECTION_FAVS:  menu_cell_basic_header_draw(ctx, cell_layer, "Favourite stops"); break;
+    case MENU_SECTION_ADD:  menu_cell_basic_header_draw(ctx, cell_layer, "Add stop"); break;
+    case MENU_SECTION_OPTIONS:  menu_cell_basic_header_draw(ctx, cell_layer, "Options"); break;
+    case MENU_SECTION_REMOVE:  menu_cell_basic_header_draw(ctx, cell_layer, "Remove stop"); break;
   }
 }
 
@@ -420,16 +538,17 @@ static void menu_draw_header_callback(GContext* ctx, const Layer *cell_layer, ui
 static void menu_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
   // Determine which section we're going to draw in
   switch (cell_index->section) {
-    case 0:
-    case 2:
+    case MENU_SECTION_FAVS:
+    case MENU_SECTION_REMOVE:
       menu_cell_basic_draw(ctx, cell_layer, platforms[cell_index->row].Road, platforms[cell_index->row].Name, NULL);
       break;
 
     default:
-      switch (cell_index->section * 100 + cell_index->row) {
-        case 100: menu_cell_basic_draw(ctx, cell_layer, "By Number", NULL, NULL); break;
-        case 101: menu_cell_basic_draw(ctx, cell_layer, "By Location", NULL, NULL); break;
-        case 300: menu_cell_basic_draw(ctx, cell_layer, autoselect?"Auto Select: Yes":"Auto Select: No", "Nearest Favourite", NULL); break;
+      switch (MENU_SECTION_CELL) {
+        case MENU_ADD_NUMBER: menu_cell_basic_draw(ctx, cell_layer, "By Number", NULL, NULL); break;
+        case MENU_ADD_LOCATION: menu_cell_basic_draw(ctx, cell_layer, "By Location", NULL, NULL); break;
+        case MENU_OPTIONS_AUTO: menu_cell_basic_draw(ctx, cell_layer, "Auto Select", "Nearest Favourite", autoselect ? bitmap_option_tick : bitmap_option_box); break;
+        case MENU_OPTIONS_ROUTES: menu_cell_basic_draw(ctx, cell_layer, "Fav routes",num_platforms?"Long click to edit":"Add fav stop first", favourite_routes_show ? bitmap_option_tick : bitmap_option_box); break;
       }
   }
 }
@@ -438,23 +557,13 @@ static void menu_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
 static void menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
   
   switch (cell_index->section) {
-    case 0: // select favourite
+    case MENU_SECTION_FAVS: // select favourite
       platform = cell_index->row;
       retries = 0;
       window_stack_push(window_list, true /* Animated */);
       fetch_arrivals();
       break;
-    case 1: // Add favourite
-      switch (cell_index->row) {
-        case 0: // By Number
-          window_stack_push(window_number, true /* Animated */);
-          break;
-        case 1: // By Location
-          fetch_nearest_platforms("");
-          break;
-      }
-      break;
-    case 2: // delete favourite
+    case MENU_SECTION_REMOVE: // delete favourite
       for (int a=cell_index->row; a<num_platforms-1; a++) {
         platforms[a]=platforms[a+1];
         persist_write_data(STORAGE_KEY_PLATFORM+a, &platforms[a], sizeof(platforms[a]));
@@ -464,11 +573,38 @@ static void menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
       menu_layer_reload_data(menu_layer);
       save_settings_to_phone();
       break;
-    case 3: // options
-      persist_write_bool(STORAGE_KEY_AUTOSELECT, autoselect=!autoselect);
-      menu_layer_reload_data(menu_layer);
-      save_settings_to_phone();
-      break;
+    default:
+      switch (MENU_SECTION_CELL) {
+        case MENU_ADD_NUMBER: window_stack_push(window_number, true /* Animated */); break;
+        case MENU_ADD_LOCATION: fetch_nearest_platforms(""); break;
+        case MENU_OPTIONS_AUTO: 
+        case MENU_OPTIONS_ROUTES: 
+          if (MENU_SECTION_CELL==MENU_OPTIONS_AUTO) {
+            persist_write_bool(STORAGE_KEY_AUTOSELECT, autoselect=!autoselect);
+          } else {
+            persist_write_bool(STORAGE_KEY_FAVOURITE_ROUTES_SHOW, favourite_routes_show=!favourite_routes_show);
+          }
+          menu_layer_reload_data(menu_layer);
+          save_settings_to_phone();
+          break;
+      }
+  }
+}
+
+static void menu_select_long_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+  if (MENU_SECTION_CELL == MENU_OPTIONS_ROUTES) { // Get list of favourte routes for favourite stops
+    num_nearest=1;
+    strcpy(nearest[0].Number, "");
+    strcpy(nearest[0].Name, "for favourite stops...");
+    strcpy(nearest[0].Road, "Getting routes");
+    window_stack_push(window_menu_nearest, true /* Animated */);
+    
+    char plats[(MAX_PL_NUM_LENGTH+1)*MAX_PLATFORMS]="";
+    for (int a=0; a<num_platforms; a++) {
+      strcat(plats,platforms[a].Number);
+      strcat(plats,";");
+    }
+    fetch_routes_for_platforms(plats);
   }
 }
 
@@ -476,25 +612,53 @@ static uint16_t menu_nearest_get_num_sections_callback(MenuLayer *menu_layer, vo
   return 1;
 }
 static uint16_t menu_nearest_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
-  return num_nearest;
+  return (KEY_LOCATION==last_message || num_routes==0) ? num_nearest : num_routes;
+}
+static int16_t menu_nearest_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+  return (KEY_LOCATION==last_message || num_routes==0) ? MENU_HEIGHT_DOUBLE : MENU_HEIGHT_SINGLE;
 }
 static void menu_nearest_draw_header_callback(GContext* ctx, const Layer *cell_layer, uint16_t section_index, void *data) {
-   menu_cell_basic_header_draw(ctx, cell_layer, "Nearest stops");
+   menu_cell_basic_header_draw(ctx, cell_layer, (KEY_LOCATION==last_message ? "Nearest stops" : "Favourite Routes") );
 }
 static void menu_nearest_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
-  menu_cell_basic_draw(ctx, cell_layer, nearest[cell_index->row].Road, nearest[cell_index->row].Name, NULL);
+  if (KEY_LOCATION==last_message || num_routes==0) {
+    menu_cell_basic_draw(ctx, cell_layer, nearest[cell_index->row].Road, nearest[cell_index->row].Name, NULL);
+  } else {
+      GFont font_24_bold = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+      GRect bounds = layer_get_frame(cell_layer);
+      
+      graphics_context_set_text_color(ctx, GColorBlack);
+//      graphics_draw_bitmap_in_rect(ctx, (check_if_favourite_route(routes[cell_index->row].Route) ? bitmap_option_tick : bitmap_option_box), GRect(4, (bounds.size.h-OPTION_TICK_SIZE)>>1, OPTION_TICK_SIZE, OPTION_TICK_SIZE));
+      graphics_draw_bitmap_in_rect(ctx, (check_if_favourite_route(routes[cell_index->row].Route) ? bitmap_option_tick : bitmap_option_box), GRect(4, (bounds.size.h-OPTION_TICK_SIZE)>>1, OPTION_TICK_SIZE, OPTION_TICK_SIZE));
+      graphics_draw_text(ctx, routes[cell_index->row].Route, font_24_bold, GRect(24, -2, 30, bounds.size.h-2), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+      graphics_draw_text(ctx, routes[cell_index->row].Destination, font_24_bold, GRect(24+30+4, -2, bounds.size.w-24-30-4, bounds.size.h-2), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+  }
 }
 static void menu_nearest_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
-  if (num_nearest>1) {
+  if (KEY_LOCATION==last_message && num_nearest>1) {
     int offset=0;
     while (nearest[cell_index->row].Name[offset++]!=' '); // remove "123m " from the platform name
-    add_platform(nearest[cell_index->row].Number,&nearest[cell_index->row].Name[offset], nearest[cell_index->row].Road);
+    next_message_callback=&fetch_arrivals;
+    add_platform(nearest[cell_index->row].Number,&nearest[cell_index->row].Name[offset], nearest[cell_index->row].Road); 
     window_stack_remove(window_menu, false /* Animated */);
     window_stack_push(window_menu, false);
     window_stack_remove(window_menu_nearest, false /* Animated */);
     platform = num_platforms-1;
     window_stack_push(window_list, true /* Animated */);
-    fetch_arrivals();
+  } else if (KEY_GET_ROUTES==last_message && num_routes) {
+    char rte[MAX_ROUTE_LENGTH+3];
+    snprintf(rte,MAX_ROUTE_LENGTH+3,",%s,",routes[cell_index->row].Route);
+    char *start = check_if_favourite_route(routes[cell_index->row].Route);
+    if (start!=NULL) { // remove it from the list
+      char *offset=start + strlen(rte)-1;
+      do *start++=*offset; while (*offset++);
+    } else { // add it to the list
+      strcat(favourite_routes_list,routes[cell_index->row].Route);
+      strcat(favourite_routes_list,",");
+    }
+    persist_write_string(STORAGE_KEY_FAVOURITE_ROUTES_LIST, favourite_routes_list);
+    save_settings_to_phone();
+    menu_layer_reload_data(menu_layer);
   }
 }
 // *****************************************************************************************************
@@ -522,6 +686,7 @@ void window_menu_load(Window *window) {
     .draw_header = menu_draw_header_callback,
     .draw_row = menu_draw_row_callback,
     .select_click = menu_select_callback,
+    .select_long_click = menu_select_long_callback
   });
 
   // Bind the menu layer's click config provider to the window for interactivity
@@ -538,22 +703,40 @@ void window_menu_unload(Window *window) {
 
 void arrivals_layer_update_callback(Layer *layer, GContext *ctx) { // screen size = 144 x 168 px
   GRect bounds = layer_get_frame(layer);
-  
+  bool favs_only = favourite_routes_show && (num_arrivals_favourites>0);
+    
   graphics_context_set_text_color(ctx, GColorWhite);
   char title[50];
   if (fetching) {
     snprintf(title,49,"Updating... (x%d)",retries);
     if (retries<2) title[11]=0;
   }
+  
   graphics_draw_text(ctx, (fetching?title:platforms[platform].Name), fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD), GRect(0, 0, bounds.size.w-PLATFORM_WIDTH, PLATFORM_HEIGHT), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
   graphics_draw_text(ctx, platforms[platform].Number, fonts_get_system_font(FONT_KEY_GOTHIC_14), GRect(bounds.size.w-PLATFORM_WIDTH, 0, PLATFORM_WIDTH, PLATFORM_HEIGHT), GTextOverflowModeFill, GTextAlignmentRight, NULL);
   
-  GFont font_18_bold = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
-  GFont font_18 = fonts_get_system_font(FONT_KEY_GOTHIC_18);
-  for (int a=0, y=PLATFORM_HEIGHT; a<num_arrivals; a++, y+=ARRIVAL_HEIGHT) {
-      graphics_draw_text(ctx, arrivals[a].Route, font_18_bold, GRect(0, y, ROUTE_WIDTH, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
-      graphics_draw_text(ctx, arrivals[a].Destination, font_18, GRect(ROUTE_WIDTH, y, bounds.size.w-ETA_WIDTH-ROUTE_WIDTH, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
-      graphics_draw_text(ctx, arrivals[a].Eta, font_18_bold, GRect(bounds.size.w-ETA_WIDTH, y, ETA_WIDTH, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentRight, NULL);
+  GFont font_bold = fonts_get_system_font(num_arrivals_visible<5 ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18_BOLD);
+  GFont font_reg = fonts_get_system_font(num_arrivals_visible<5 ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_18);
+  for (int a=0, y=PLATFORM_HEIGHT; a<num_arrivals; a++) {
+    if (!favs_only || check_if_favourite_route(arrivals[a].Route)) {
+      if (num_arrivals_visible==1) { // window is y+140px high
+        snprintf(title,50,"%s%s",arrivals[a].Eta,arrivals[a].Eta[0]?" m":"");
+        graphics_draw_text(ctx, arrivals[a].Route, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD), GRect(0, y, bounds.size.w, 50), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+        graphics_draw_text(ctx, arrivals[a].Destination, fonts_get_system_font(FONT_KEY_GOTHIC_28), GRect(0, y+40, bounds.size.w, 60), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+        graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD), GRect(0, y+50+44, bounds.size.w, 50), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+      } else if (num_arrivals_visible<5) {
+        snprintf(title,50,"%s%s",arrivals[a].Eta,arrivals[a].Eta[0]?" m":"");
+        graphics_draw_text(ctx, arrivals[a].Route, font_bold, GRect(0, y, bounds.size.w >> 1, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+        graphics_draw_text(ctx, arrivals[a].Destination, font_reg, GRect(24, y+ARRIVAL_HEIGHT+3, bounds.size.w-24, ARRIVAL_HEIGHT-3), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+        graphics_draw_text(ctx, title, font_bold, GRect(bounds.size.w >> 1, y, bounds.size.w >> 1, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentRight, NULL);
+        y+=ARRIVAL_HEIGHT << 1;
+      } else {
+        graphics_draw_text(ctx, arrivals[a].Route, font_bold, GRect(0, y, ROUTE_WIDTH, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+        graphics_draw_text(ctx, arrivals[a].Destination, font_reg, GRect(ROUTE_WIDTH, y, bounds.size.w-ETA_WIDTH-ROUTE_WIDTH, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+        graphics_draw_text(ctx, arrivals[a].Eta, font_bold, GRect(bounds.size.w-ETA_WIDTH, y, ETA_WIDTH, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentRight, NULL);
+        y+=ARRIVAL_HEIGHT;
+      }
+    }
   }
 }
   
@@ -572,6 +755,8 @@ void window_list_load(Window *window) {
   
   // set default content for window
   num_arrivals=1;
+  num_arrivals_visible=1;
+  num_arrivals_favourites=0;
   arrivals[0].Route[0]=0;
   strncpy(arrivals[0].Destination, "Fetching data...", MAX_DESTINATION_LENGTH);
   arrivals[0].Eta[0]=0;
@@ -602,7 +787,7 @@ void window_menu_nearest_load(Window *window) {
     .get_num_sections = menu_nearest_get_num_sections_callback,
     .get_num_rows = menu_nearest_get_num_rows_callback,
     .get_header_height = menu_get_header_height_callback,
-    .get_cell_height = menu_get_cell_height_callback,
+    .get_cell_height = menu_nearest_get_cell_height_callback,
     .draw_header = menu_nearest_draw_header_callback,
     .draw_row = menu_nearest_draw_row_callback,
     .select_click = menu_nearest_select_callback,
@@ -618,6 +803,9 @@ void window_menu_nearest_load(Window *window) {
 void window_menu_nearest_unload(Window *window) {
   // Destroy the menu layer
   menu_layer_destroy(menu_layer_nearest);
+  if (routes) free(routes);
+  routes=NULL;
+  num_routes=0;
 }
 
 void action_bar_increment(int inc) {
@@ -659,13 +847,14 @@ void action_bar_select_click_handler() {
   } else { // the platform is valid and use selected to add it
     strcat(nearest[0].Name," - ");
     strcat(nearest[0].Name, nearest[0].Number); // this is actually the bearing
-    add_platform(number_selector, nearest[0].Road, nearest[0].Name);
+    
+    next_message_callback=&fetch_arrivals;
+    add_platform(number_selector, nearest[0].Road, nearest[0].Name); 
     window_stack_remove(window_menu, false /* Animated */);
     window_stack_push(window_menu, false);
     window_stack_remove(window_number, false /* Animated */);
     platform = num_platforms-1;
     window_stack_push(window_list, true /* Animated */);
-    fetch_arrivals();
   }
   layer_mark_dirty(number_layer);
 }
@@ -777,17 +966,26 @@ void init(void) {
   bitmap_down=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_DOWN);
   bitmap_right=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_RIGHT);
   bitmap_tick=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_TICK);
+  bitmap_option_tick=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_OPTION_TICK);
+  bitmap_option_box=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_OPTION_BOX);
   
 	// Register AppMessage handlers
 	app_message_register_inbox_received(inbox_received_handler); 
 	app_message_register_inbox_dropped(inbox_dropped_handler); 
 	app_message_register_outbox_failed(outbox_failed_handler);
+  app_message_register_outbox_sent(outbox_sent_handler);
 	app_message_open(app_message_inbox_size_maximum(), app_message_outbox_size_maximum());
   
   // Read stored data from watch.
   num_platforms=0;
   uint32_t stored_version = persist_read_int(STORAGE_KEY_VERSION); // defaults to 0 if key is missing.
   autoselect=persist_read_bool(STORAGE_KEY_AUTOSELECT);
+  favourite_routes_show=persist_read_bool(STORAGE_KEY_FAVOURITE_ROUTES_SHOW); // introduced in storage version 2
+  if (persist_exists(STORAGE_KEY_FAVOURITE_ROUTES_LIST)) { // introduced in storage version 2
+    persist_read_string(STORAGE_KEY_FAVOURITE_ROUTES_LIST, favourite_routes_list, MAX_FAV_ROUTES_LIST_LENGTH);
+  } else {
+    snprintf(favourite_routes_list,3,",");
+  }
   char plats[(MAX_PL_NUM_LENGTH+1)*MAX_PLATFORMS]="";
   while (persist_exists(STORAGE_KEY_PLATFORM+num_platforms) && num_platforms<MAX_PLATFORMS) {
     persist_read_data(STORAGE_KEY_PLATFORM+num_platforms, &platforms[num_platforms], sizeof(platforms[num_platforms]));
@@ -801,7 +999,7 @@ void init(void) {
 
   window_stack_push(window_menu, true /* Animated */);
   
-  APP_LOG(APP_LOG_LEVEL_INFO, "sizeof arrivals:%d, outbox:%d", (int)sizeof(arrivals), (int)app_message_outbox_size_maximum());
+  // APP_LOG(APP_LOG_LEVEL_INFO, "sizeof arrivals:%d, outbox:%d", (int)sizeof(arrivals), (int)app_message_outbox_size_maximum());
 }
 
 void deinit(void) {
@@ -814,6 +1012,8 @@ void deinit(void) {
   gbitmap_destroy(bitmap_down);
   gbitmap_destroy(bitmap_right);
   gbitmap_destroy(bitmap_tick);
+  gbitmap_destroy(bitmap_option_tick);
+  gbitmap_destroy(bitmap_option_box);
 }
 
 int main(void) {
