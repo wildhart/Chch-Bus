@@ -1,5 +1,7 @@
-var platformNo = null;
-var platformsOBJ=null;
+var platformNo = null;        // number of current platform
+var platformsOBJ=null;        // object full of platform data
+var get_platforms_list = [];  // list of platforms for which routes need to be fetched
+var get_platforms_routes;     // will store list of routes for favourite platforms
 
 // variables used for calculating distance between 2 coordinates
 var deg2rad = 0.017453292519943295; // === Math.PI / 180
@@ -13,10 +15,8 @@ var nearest_limit=10;
 var location_reason=null;
 
 Pebble.addEventListener('ready', function(e) {
-  Pebble.sendAppMessage({'KEY_JS_READY': ""});
-  //var value = localStorage.getItem("autoload");
-  //console.log("autoload="+value);
-  //localStorage.setItem("autoload", "true");
+  var settings=localStorage.getItem("settings");
+  Pebble.sendAppMessage({'KEY_JS_READY': (settings) ? settings : ""});
 });
 
 // Called when incoming message from the Pebble is received
@@ -25,12 +25,13 @@ Pebble.addEventListener("appmessage",	function(e) {
   for (var p in e.payload) {
     if (p=="KEY_ARRIVALS") { 
       platformNo=e.payload.KEY_ARRIVALS;
+      get_platforms_list=[];
       update();
     } else if (p=="KEY_LOCATION") {
-      if ((typeof e.payload.KEY_LOCATION)=='number') {
+      if ((typeof e.payload.KEY_LOCATION)=='number') { // get locations of all platforms and return nearest N
         location_reason='all';
         nearest_limit = e.payload.KEY_LOCATION;
-      } else {
+      } else {  // find nearest favourite platform
         location_reason=e.payload.KEY_LOCATION;
         nearest_limit = 1;
       }
@@ -45,6 +46,14 @@ Pebble.addEventListener("appmessage",	function(e) {
       } else {
         check_platform(e.payload.KEY_CHECK_PLATFORM);
       }
+    } else if (p=="KEY_SAVE_SETTINGS") {
+      //console.log("KEY_SAVE_SETTINGS: " + JSON.stringify(e.payload));
+      localStorage.setItem('settings',e.payload.KEY_SAVE_SETTINGS);
+    } else if (p=="KEY_GET_ROUTES") {
+      get_platforms_list=e.payload.KEY_GET_ROUTES.split(';'); // there is a trailing ; so last item in array is blank
+      platformNo = get_platforms_list.shift();
+      get_platforms_routes=[];
+      update();
     } else {
       console.log("Received unknown message: " + JSON.stringify(e.payload));
     }
@@ -70,9 +79,25 @@ function update() {
       if(req.status == 200) {
         //console.log('AJAX Resonse: ' + req.responseText);
         var busses=XMLtoarray(req.responseText);
+        var message='';
         //platformName=data.match(/<Platform .* Name="(.*?)"/i)[1];
-        var message=objToString(busses);
-        Pebble.sendAppMessage({'KEY_ARRIVALS':message});
+        if (get_platforms_list.length) {
+          for (var a in busses) if (get_platforms_routes[busses[a].route]===undefined) get_platforms_routes[busses[a].route] = busses[a].destination;
+          platformNo=get_platforms_list.shift();
+          if (platformNo) {
+            update();
+          } else {
+            message="";
+            for (a in get_platforms_routes) {
+              message+=a+";"+get_platforms_routes[a]+";";
+            }
+            Pebble.sendAppMessage({'KEY_GET_ROUTES':message});
+            platformNo="";
+          }
+        } else {
+          message=objToString(busses);
+          Pebble.sendAppMessage({'KEY_ARRIVALS':message});
+        }
       } else { console.log('Error'); }
     } else { console.log('Error 2'); }
   };
@@ -83,7 +108,8 @@ function XMLtoarray(data) {
   // return bus arrival data, sorted by ETA
   var busses=[];
   var routes=data.match(/<Route ([\S\s]*?)<\/Route>/gi);
-  if (!routes) return [{route:'', destination: 'No buses due in', eta:''},{route:'', destination: 'the next '+data.match(/MaxArrivalScope="(\d*)/)[1]+' mins', eta:''}];
+  //if (!routes) return [{route:'', destination: 'No buses due in', eta:''},{route:'', destination: 'the next '+data.match(/MaxArrivalScope="(\d*)/)[1]+' mins', eta:''}];
+  if (!routes) return [{route:'', destination: 'No buses due in the next', eta:data.match(/MaxArrivalScope="(\d*)/)[1]}];
   for (var r=0; r<routes.length; r++) {
     var route=routes[r].match(/RouteNo="(\S*)"/i)[1];
     var destinations=routes[r].match(/<Destination ([\S\s]*?)<\/Destination>/gi);
@@ -179,7 +205,7 @@ function calculate_distance_all() {
     items+=nearest[i].PlatformNo+";"+dist+plat.Name.substr(0,24)+";"+plat.RoadName + ' - ' + bearing_to_text(plat.BearingToRoad)+";";
     //console.log(nearest[i].PlatformNo+";"+dist+plat.Name.substr(0,24)+";"+plat.RoadName + ' - ' + bearing_to_text(plat.BearingToRoad)+";");
   }
-  console.log(items.length);
+  //console.log(items.length);
   Pebble.sendAppMessage({'KEY_LOCATION':items});
 }
 
