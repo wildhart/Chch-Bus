@@ -336,13 +336,21 @@ static void process_settings(char *source) {
         case STORAGE_KEY_VERSION:     
 //          version = atoi(bus[1]);       
           break;
-        case STORAGE_KEY_AUTOSELECT: autoselect=(atoi(bus[1])==1);  break;
-        case STORAGE_KEY_FAVOURITE_ROUTES_SHOW: favourite_routes_show=(atoi(bus[1])==1);  break;
-        case STORAGE_KEY_FAVOURITE_ROUTES_LIST: snprintf(favourite_routes_list,MAX_FAV_ROUTES_LIST_LENGTH,"%s",bus[1]); break;
+        case STORAGE_KEY_AUTOSELECT:
+          persist_write_bool(STORAGE_KEY_AUTOSELECT,autoselect=(atoi(bus[1])==1));
+        break;
+        case STORAGE_KEY_FAVOURITE_ROUTES_SHOW:
+          persist_write_bool(STORAGE_KEY_FAVOURITE_ROUTES_SHOW,favourite_routes_show=(atoi(bus[1])==1));
+          break;
+        case STORAGE_KEY_FAVOURITE_ROUTES_LIST:
+          snprintf(favourite_routes_list,MAX_FAV_ROUTES_LIST_LENGTH,"%s",bus[1]);
+          persist_write_string(STORAGE_KEY_FAVOURITE_ROUTES_LIST, favourite_routes_list);
+          break;
         case STORAGE_KEY_PLATFORM:
           snprintf(platforms[num_platforms].Number,MAX_PL_NUM_LENGTH,"%s",bus[1]);
           snprintf(platforms[num_platforms].Name,MAX_NAME_LENGTH,"%s",bus[2]);
           snprintf(platforms[num_platforms].Road,MAX_ROAD_LENGTH,"%s",bus[3]);
+          persist_write_data(STORAGE_KEY_PLATFORM+num_platforms, &platforms[num_platforms], sizeof(platforms[num_platforms]));
           strcat(plats,platforms[num_platforms].Number);
           strcat(plats,";");
           num_platforms++;
