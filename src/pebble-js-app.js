@@ -115,10 +115,11 @@ function XMLtoarray(data) {
     var destinations=routes[r].match(/<Destination ([\S\s]*?)<\/Destination>/gi);
     for (var d=0; d<destinations.length; d++) {
       var dest_name=destinations[d].match(/Name="(.*?)"/i)[1];
-      var etas=destinations[d].match(/ETA="(.*?)"/gi);
-      for (var e=0; e<etas.length; e++) {
-        var eta=etas[e].match(/\d+/);
-        busses.push({route:route, destination:dest_name.replace(/&amp;/g, "&"), eta:eta[0]});
+      var trips=destinations[d].match(/<Trip (.*?)\/>/gi);
+      for (var e=0; e<trips.length; e++) {
+        var eta=trips[e].match(/ETA="(\d+)/)[1];
+        var trip=trips[e].match(/TripNo="(\d+)/)[1];
+        busses.push({route:route, destination:dest_name.replace(/&amp;/g, "&"), eta:eta, trip:trip});
       }
     }
   }
@@ -130,7 +131,7 @@ function objToString (obj) {
   var str = '';
   for (var p in obj) {
      if (obj.hasOwnProperty(p)) {
-          str += obj[p].route+";"+obj[p].destination+";"+obj[p].eta + ';';
+          str += obj[p].route+";"+obj[p].destination+";"+obj[p].eta+';'+obj[p].trip+';';
       }
   }
   return str;

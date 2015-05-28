@@ -12,18 +12,29 @@ struct platform {
 int num_platforms = 0;
 int platform = -1;
 
-#define MAX_ARRIVALS 10
+#define MAX_ARRIVALS 30
 #define MAX_ROUTE_LENGTH 4
 #define MAX_DESTINATION_LENGTH 32
-#define MAX_ETA_LENGTH 2
 struct arrival {
   char Route[MAX_ROUTE_LENGTH+1];
   char Destination[MAX_DESTINATION_LENGTH+1];
-  char Eta[MAX_ETA_LENGTH+1];
+  uint Eta;
+  uint Trip;
+  bool Favourite;
+  bool Visible;
 } arrivals[MAX_ARRIVALS];
 int num_arrivals=0;
 int num_arrivals_favourites=0;
 int num_arrivals_visible=0;
+int single_arrival_visible_index=-1;
+int arrival_selected;
+uint trip_selected=0;
+bool show_time=false;
+struct early_warning_st {
+  uint Platform;
+  uint Trip;
+  uint Mins;
+} early_warning;
 
 enum { // main menu structure
   MENU_SECTION_FAVS,
@@ -51,7 +62,6 @@ static MenuLayer *menu_layer;
 #define PLATFORM_HEIGHT 12
 #define ARRIVAL_HEIGHT 16
 #define ROUTE_WIDTH 24
-#define ETA_WIDTH 16
 static Window *window_list;
 static ScrollLayer *scroll_layer;
 static Layer *arrivals_layer;
@@ -86,10 +96,9 @@ static GBitmap *bitmap_right;
 static GBitmap *bitmap_tick;
 static GBitmap *bitmap_option_tick;
 static GBitmap *bitmap_option_box;
+static GBitmap *bitmap_bell;
 #define OPTION_TICK_SIZE 16
 int number_selected = 0;
-
-AppTimer *timer;
 
 // Key values for AppMessage Dictionary
 #define KEY_ARRIVALS 0
@@ -109,6 +118,8 @@ void (*next_message_callback)(void);
 #define STORAGE_KEY_VERSION 2
 #define STORAGE_KEY_FAVOURITE_ROUTES_SHOW 3
 #define STORAGE_KEY_FAVOURITE_ROUTES_LIST 4
+#define STORAGE_KEY_EARLY_WARNING 5
+#define STORAGE_KEY_HELP_FLAGS 6
 #define STORAGE_KEY_PLATFORM 100
 #define CURRENT_STORAGE_VERSION 2
 bool autoselect = false;
@@ -116,6 +127,14 @@ bool favourite_routes_show = false;
 #define MAX_FAV_ROUTES_LIST_LENGTH 32
 char favourite_routes_list[MAX_FAV_ROUTES_LIST_LENGTH+1];
 bool data_exists = false;
+AppTimer *timer=0; // this is for regular fetching of arrivals
+static WakeupId wakeup_id; // this is for relaunching the app when a bus or stop gets near
+
+#define HELP_FLAGS_ETA    1
+#define HELP_FLAGS_DOWN   2
+#define HELP_FLAGS_FULLSCREEN  4
+#define HELP_FLAGS_ALARM  8
+uint help_flags=0;
 
 // *****************************************************************************************************
 // MESSAGES
@@ -124,7 +143,7 @@ bool data_exists = false;
 static void redraw_arrivals() {
   // Set correct size of arrivals list and redraw  
   GRect bounds = layer_get_frame(scroll_layer_get_layer(scroll_layer));
-  uint height=num_arrivals_visible==1 ? 168-PLATFORM_HEIGHT-16 : (ARRIVAL_HEIGHT+ARRIVAL_HEIGHT*(num_arrivals_visible>4 ? num_arrivals_visible : num_arrivals_visible<<1));
+  uint height=(num_arrivals_visible<=4 || trip_selected>0) ? 168-PLATFORM_HEIGHT-16 : (ARRIVAL_HEIGHT+ARRIVAL_HEIGHT*num_arrivals_visible);
   scroll_layer_set_content_size(scroll_layer, GSize(bounds.size.w, PLATFORM_HEIGHT+height));
   layer_set_frame(arrivals_layer, GRect(0,0, bounds.size.w, PLATFORM_HEIGHT+height));
   layer_mark_dirty(scroll_layer_get_layer(scroll_layer));
@@ -160,13 +179,44 @@ static char* check_if_favourite_route(char *route) {
   return strstr(favourite_routes_list,rte); // pointer to substring if true, NULL if false
 }
 
+
+void set_wakeup(uint reason, uint mins) {
+  if (wakeup_id>0) {
+    wakeup_cancel(wakeup_id);
+    wakeup_id=0;
+  }
+  if (mins) {
+    wakeup_id = wakeup_schedule(time(NULL)+60*mins,reason,true);
+    if (wakeup_id==E_RANGE) set_wakeup(reason,mins-1);
+  }
+  APP_LOG(APP_LOG_LEVEL_INFO, "set wakeup id:%d, reason:%d, mins:%d", (int)wakeup_id,reason,mins);
+}
+
+void set_early_warning(const uint platform, const uint trip, uint mins, uint eta) {
+  early_warning.Platform=mins ? platform : 0;
+  early_warning.Trip=mins ? trip : 0;
+  early_warning.Mins=mins;
+  if (mins==0) { // cancel wakeup timer
+    persist_delete(STORAGE_KEY_EARLY_WARNING);
+    set_wakeup(0,0);
+  } else { // set wakeup timer
+    persist_write_data(STORAGE_KEY_EARLY_WARNING, &early_warning, sizeof(early_warning));
+    mins = eta-mins;
+    set_wakeup(STORAGE_KEY_EARLY_WARNING, (mins<5) ? 1 : mins/2);
+  }
+}
+
 static void process_arrivals(char *source) {
-  char bus[3][MAX_NAME_LENGTH+1];
+  uint columns=4;
+  char bus[columns][MAX_NAME_LENGTH+1];
   uint s=0; // source offset
   uint c=0; // column (0=route, 1=destination, 2 = eta)
+  bool selected_trip_still_visible = false;
   num_arrivals=0;
   num_arrivals_favourites=0;
   num_arrivals_visible=0;
+  single_arrival_visible_index=-1;
+  arrival_selected=-1;
   while (source[s] && num_arrivals<MAX_ARRIVALS) {
     uint d=0; // destination offset
     while (source[s] && source[s]!=';' && d<MAX_NAME_LENGTH) {
@@ -174,17 +224,37 @@ static void process_arrivals(char *source) {
     }
     bus[c++][d]=0;
     s++;
-    if (c==3) {
+    if (c==columns) {
       strncpy(arrivals[num_arrivals].Route, bus[0], MAX_ROUTE_LENGTH);
       strncpy(arrivals[num_arrivals].Destination, bus[1], MAX_DESTINATION_LENGTH);
-      strncpy(arrivals[num_arrivals].Eta, bus[2], MAX_ETA_LENGTH);
+      arrivals[num_arrivals].Eta=atoi(bus[2]);
+      arrivals[num_arrivals].Trip=atoi(bus[3]);
+      if (arrivals[num_arrivals].Trip==early_warning.Trip) {
+        trip_selected=early_warning.Trip; // switch back to correct trip for early warning.
+        if (early_warning.Mins>=arrivals[num_arrivals].Eta) { // VIBRATE !!!!!
+           // Vibe pattern: ON for 200ms, OFF for 100ms, ON for 400ms:
+          static const uint32_t segments[] = { 400,200, 400,200, 400,200, 400,200, 400 };
+          VibePattern pat = {
+            .durations = segments,
+            .num_segments = ARRAY_LENGTH(segments),
+          };
+          vibes_enqueue_custom_pattern(pat);
+        } else if (!persist_exists(STORAGE_KEY_EARLY_WARNING)) {
+          set_early_warning(platform, trip_selected, early_warning.Mins, arrivals[num_arrivals].Eta);
+        }
+      }
+      if (arrivals[num_arrivals].Trip==trip_selected) {
+        selected_trip_still_visible=true;
+      }
       // APP_LOG(APP_LOG_LEVEL_INFO, "route:%s; dest:%s; eta:%s", arrivals[num_arrivals].Route,arrivals[num_arrivals].Destination,arrivals[num_arrivals].Eta);
-      if (check_if_favourite_route(arrivals[num_arrivals].Route)) num_arrivals_favourites++; // there is a favourite, so only show favourites
+      arrivals[num_arrivals].Favourite = check_if_favourite_route(arrivals[num_arrivals].Route);
+      if (arrivals[num_arrivals].Favourite) num_arrivals_favourites++; // there is a favourite, so only show favourites
       num_arrivals++;
       c=0;
     }
   }
   num_arrivals_visible = (favourite_routes_show && num_arrivals_favourites) ? num_arrivals_favourites : num_arrivals;
+  if (!selected_trip_still_visible) trip_selected=0;
   fetching=false;
   retries=0;
   redraw_arrivals();
@@ -211,7 +281,8 @@ static void fetch_nearest_platforms(char *favourites) {
 }
 
 static void process_platforms(char *source) {
-  char bus[3][MAX_NAME_LENGTH+1];
+  uint columns=3;
+  char bus[columns][MAX_NAME_LENGTH+1];
   uint s=0; // source offset
   uint c=0; // column (0=number, 1=name, 3=road)
   num_nearest=0;
@@ -222,7 +293,7 @@ static void process_platforms(char *source) {
     }
     bus[c++][d]=0;
     s++;
-    if (c==3) {
+    if (c==columns) {
       strncpy(nearest[num_nearest].Number, bus[0], MAX_PL_NUM_LENGTH);
       strncpy(nearest[num_nearest].Name, bus[1], MAX_NAME_LENGTH);
       strncpy(nearest[num_nearest].Road, bus[2], MAX_ROAD_LENGTH);
@@ -290,7 +361,7 @@ static void process_routes(char *source) {
     if (source[s++]==';') num_routes++; // this will counnt twice the number of routes
   }
   
-  struct route *r=malloc( (num_routes>>1) * sizeof(struct route)); // >> 1 halves the number of routes.
+  struct route *r=malloc( (num_routes/columns) * sizeof(struct route)); // num_routes is atually the number of semicolons
   routes = r;
   
   num_routes=0;
@@ -636,8 +707,7 @@ static void menu_nearest_draw_row_callback(GContext* ctx, const Layer *cell_laye
       GRect bounds = layer_get_frame(cell_layer);
       
       graphics_context_set_text_color(ctx, GColorBlack);
-//      graphics_draw_bitmap_in_rect(ctx, (check_if_favourite_route(routes[cell_index->row].Route) ? bitmap_option_tick : bitmap_option_box), GRect(4, (bounds.size.h-OPTION_TICK_SIZE)>>1, OPTION_TICK_SIZE, OPTION_TICK_SIZE));
-      graphics_draw_bitmap_in_rect(ctx, (check_if_favourite_route(routes[cell_index->row].Route) ? bitmap_option_tick : bitmap_option_box), GRect(4, (bounds.size.h-OPTION_TICK_SIZE)>>1, OPTION_TICK_SIZE, OPTION_TICK_SIZE));
+      graphics_draw_bitmap_in_rect(ctx, (check_if_favourite_route(routes[cell_index->row].Route) ? bitmap_option_tick : bitmap_option_box), GRect(4, (bounds.size.h-OPTION_TICK_SIZE)/2, OPTION_TICK_SIZE, OPTION_TICK_SIZE));
       graphics_draw_text(ctx, routes[cell_index->row].Route, font_24_bold, GRect(24, -2, 30, bounds.size.h-2), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
       graphics_draw_text(ctx, routes[cell_index->row].Destination, font_24_bold, GRect(24+30+4, -2, bounds.size.w-24-30-4, bounds.size.h-2), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
   }
@@ -709,9 +779,32 @@ void window_menu_unload(Window *window) {
   menu_layer_destroy(menu_layer);
 }
 
+
+
+void draw_help(GContext *ctx, char *help, uint x, uint y, uint w) {
+  GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
+  GSize size = graphics_text_layout_get_content_size(help, font , GRect(x,y,w,200), GTextOverflowModeFill, GTextAlignmentLeft);
+  uint h = size.h;
+  
+  y -= h/2;
+  
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, GRect(x-6,y-4,w+8,h+8), 3, GCornersAll); 
+  
+  graphics_context_set_fill_color(ctx, GColorBlack);
+  graphics_fill_rect(ctx, GRect(x-4,y-2,w+4,h+4), 3, GCornersAll); 
+
+  graphics_context_set_text_color(ctx, GColorWhite); 
+  graphics_draw_text(ctx, help, font, GRect(x,y-2,w,h), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+}
+
 void arrivals_layer_update_callback(Layer *layer, GContext *ctx) { // screen size = 144 x 168 px
   GRect bounds = layer_get_frame(layer);
   bool favs_only = favourite_routes_show && (num_arrivals_favourites>0);
+  time_t my_time=time(NULL);
+  char *fmt = clock_is_24h_style() ? "%R" : "%l:%M";
+  uint eta_width = show_time ? 36 :  16;
+  single_arrival_visible_index = -1;
     
   graphics_context_set_text_color(ctx, GColorWhite);
   char title[50];
@@ -725,29 +818,129 @@ void arrivals_layer_update_callback(Layer *layer, GContext *ctx) { // screen siz
   
   GFont font_bold = fonts_get_system_font(num_arrivals_visible<5 ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18_BOLD);
   GFont font_reg = fonts_get_system_font(num_arrivals_visible<5 ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_18);
-  for (int a=0, y=PLATFORM_HEIGHT; a<num_arrivals; a++) {
-    if (!favs_only || check_if_favourite_route(arrivals[a].Route)) {
-      if (num_arrivals_visible==1) { // window is y+140px high
-        snprintf(title,50,"%s%s",arrivals[a].Eta,arrivals[a].Eta[0]?" m":"");
+
+  for (int a=0, s=-1, y=PLATFORM_HEIGHT; a<num_arrivals; a++) {
+
+    if ((!favs_only && trip_selected==0) || (favs_only && arrivals[a].Favourite) || (arrivals[a].Trip == trip_selected)) {
+      if (++s==arrival_selected) {
+        graphics_context_set_fill_color(ctx, GColorWhite);
+        uint height = (num_arrivals_visible==1?bounds.size.h:(num_arrivals_visible<5?ARRIVAL_HEIGHT*2:ARRIVAL_HEIGHT));
+        graphics_fill_rect(ctx, GRect(0,y+4,bounds.size.w,height), 0, GCornerNone);
+        graphics_context_set_text_color(ctx, GColorBlack); 
+        scroll_layer_set_content_offset(scroll_layer,GPoint(0,140-(y+height+ARRIVAL_HEIGHT*4)), true /*animated*/); // keep the highlighted row two rows from the bottom of the window.
+      } else {
+        graphics_context_set_text_color(ctx, GColorWhite);
+      }
+      if (arrivals[a].Eta==0) {
+        title[0]='\0';
+      } else if (show_time) {
+        time_t eta = my_time + 60*arrivals[a].Eta;
+        strftime(title,50,fmt,localtime(&eta));
+      } else {
+        snprintf(title,50,"%d%s",arrivals[a].Eta,(num_arrivals_visible<5 || trip_selected)?" m":"");
+      }
+      if (num_arrivals_visible==1 || arrivals[a].Trip==trip_selected) { // window is y+140px high
+        single_arrival_visible_index = a;
         graphics_draw_text(ctx, arrivals[a].Route, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD), GRect(0, y, bounds.size.w, 50), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
         graphics_draw_text(ctx, arrivals[a].Destination, fonts_get_system_font(FONT_KEY_GOTHIC_28), GRect(0, y+40, bounds.size.w, 60), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
         graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD), GRect(0, y+50+44, bounds.size.w, 50), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+        if (*title) {
+          if (arrivals[a].Eta>2 || (trip_selected==early_warning.Trip && early_warning.Mins>0)) {
+            graphics_draw_bitmap_in_rect(ctx, bitmap_bell, GRect(bounds.size.w-12,y+50+44+20-5*(trip_selected==early_warning.Trip && early_warning.Mins>0),12,14)); // 12x14px
+          }
+          if (trip_selected==early_warning.Trip && early_warning.Mins>0) {
+            snprintf(title,50,"%d",early_warning.Mins);
+            graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_14), GRect(bounds.size.w-12, y+50+44+20+10,12,20), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+          }
+        }
       } else if (num_arrivals_visible<5) {
-        snprintf(title,50,"%s%s",arrivals[a].Eta,arrivals[a].Eta[0]?" m":"");
-        graphics_draw_text(ctx, arrivals[a].Route, font_bold, GRect(0, y, bounds.size.w >> 1, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
-        graphics_draw_text(ctx, arrivals[a].Destination, font_reg, GRect(24, y+ARRIVAL_HEIGHT+3, bounds.size.w-24, ARRIVAL_HEIGHT-3), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
-        graphics_draw_text(ctx, title, font_bold, GRect(bounds.size.w >> 1, y, bounds.size.w >> 1, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentRight, NULL);
-        y+=ARRIVAL_HEIGHT << 1;
+        graphics_draw_text(ctx, arrivals[a].Route, font_bold, GRect(0, y-4, bounds.size.w/2, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+        graphics_draw_text(ctx, arrivals[a].Destination, font_reg, GRect(24, y-4+ARRIVAL_HEIGHT+3, bounds.size.w-24, ARRIVAL_HEIGHT-3), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+        graphics_draw_text(ctx, title, font_bold, GRect(bounds.size.w/2, y-4, bounds.size.w/2, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentRight, NULL);
+        y+=ARRIVAL_HEIGHT*2;
       } else {
         graphics_draw_text(ctx, arrivals[a].Route, font_bold, GRect(0, y, ROUTE_WIDTH, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
-        graphics_draw_text(ctx, arrivals[a].Destination, font_reg, GRect(ROUTE_WIDTH, y, bounds.size.w-ETA_WIDTH-ROUTE_WIDTH, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
-        graphics_draw_text(ctx, arrivals[a].Eta, font_bold, GRect(bounds.size.w-ETA_WIDTH, y, ETA_WIDTH, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentRight, NULL);
+        graphics_draw_text(ctx, arrivals[a].Destination, font_reg, GRect(ROUTE_WIDTH, y, bounds.size.w-eta_width-ROUTE_WIDTH, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+        graphics_draw_text(ctx, title, font_bold, GRect(bounds.size.w-eta_width, y, eta_width, ARRIVAL_HEIGHT), GTextOverflowModeFill, GTextAlignmentRight, NULL);
         y+=ARRIVAL_HEIGHT;
       }
     }
   }
+  // DRAW HELP
+  if (single_arrival_visible_index==-1) { // list view
+    if (!(help_flags&HELP_FLAGS_ETA)) { // intentional bit wise operator
+      draw_help(ctx, "Long press SELECT to toggle arrival time / ETA", 50,82,86);
+    } else if (!(help_flags&HELP_FLAGS_DOWN)) { // intentional bit wise operator
+      draw_help(ctx, "Press DOWN to scroll down", 50,128,86);
+    } else if (!(help_flags&HELP_FLAGS_FULLSCREEN)) { // intentional bit wise operator
+      if (arrival_selected!=-1) draw_help(ctx, "Press SELECT to view fullscreen", 50,82,86);
+    }
+  } else if (arrivals[0].Eta>0) { // fullscreen
+    if (!(help_flags&HELP_FLAGS_ETA)) { // intentional bit wise operator
+      draw_help(ctx, "Long press SELECT to toggle arrival time / ETA", 50,82,86);
+    } else if (!(help_flags&HELP_FLAGS_ALARM)) { // intentional bit wise operator
+      draw_help(ctx, "Press DOWN to set alarm (if ETA is greater than 2m)", 36,127,98);
+    }
+  }
 }
-  
+
+void scroll_layer_select_click_handler() {
+  if (help_flags&HELP_FLAGS_DOWN) help_flags |= HELP_FLAGS_FULLSCREEN;
+  if (arrivals[arrival_selected].Eta) {
+    trip_selected=arrivals[arrival_selected].Trip;
+    arrival_selected=-1;
+  }
+  redraw_arrivals();
+}
+void scroll_layer_select_long_click_handler() {
+  if (arrivals[0].Eta>0) {
+    show_time=!show_time;
+    help_flags |= HELP_FLAGS_ETA;
+    redraw_arrivals();
+  }
+}
+void scroll_layer_back_click_handler() {
+  if (trip_selected) {
+    trip_selected=0;
+    redraw_arrivals();
+  } else {
+    window_stack_pop(true);
+  }
+}
+void scroll_layer_general_click_handler(int delta) {
+  arrival_selected+=delta;
+  if (arrival_selected<-1 || num_arrivals_visible==1 || trip_selected) arrival_selected=-1;
+  if (arrival_selected>=num_arrivals_visible) arrival_selected=num_arrivals_visible-1;
+  redraw_arrivals();
+}
+void scroll_layer_up_click_handler() { scroll_layer_general_click_handler(-1); }
+void scroll_layer_down_click_handler() { 
+  if (num_arrivals_visible==1 || trip_selected) {
+    if (help_flags&HELP_FLAGS_ETA) help_flags |= HELP_FLAGS_ALARM;
+    uint mins=2;
+    if (!trip_selected) trip_selected = arrivals[single_arrival_visible_index].Trip;
+    if (trip_selected==early_warning.Trip) {
+      mins = (early_warning.Mins+2) % 32; 
+      if (mins>=arrivals[single_arrival_visible_index].Eta) mins=0;
+    }
+    set_early_warning(platform,trip_selected,mins,arrivals[single_arrival_visible_index].Eta);
+    redraw_arrivals();
+  } else {
+    if (help_flags&HELP_FLAGS_ETA) help_flags |= HELP_FLAGS_DOWN;
+    scroll_layer_general_click_handler(1);
+  }
+}
+
+void scroll_layer_click_config_provider(void *context) {
+  window_single_click_subscribe(BUTTON_ID_UP, (ClickHandler) scroll_layer_up_click_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, (ClickHandler) scroll_layer_down_click_handler);
+  window_single_click_subscribe(BUTTON_ID_SELECT, (ClickHandler) scroll_layer_select_click_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, (ClickHandler) scroll_layer_back_click_handler);
+  window_long_click_subscribe(BUTTON_ID_SELECT, 0, NULL, (ClickHandler) scroll_layer_select_long_click_handler);
+  window_single_repeating_click_subscribe(BUTTON_ID_UP, 100, scroll_layer_up_click_handler);
+  window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 100, scroll_layer_down_click_handler);
+}
+
 // This initializes the list upon window load
 void window_list_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
@@ -759,20 +952,26 @@ void window_list_load(Window *window) {
   
   arrivals_layer = layer_create(bounds);
   layer_set_update_proc(arrivals_layer, arrivals_layer_update_callback);
+  scroll_layer_set_callbacks(scroll_layer, (ScrollLayerCallbacks){
+    .click_config_provider = scroll_layer_click_config_provider
+  });
   scroll_layer_add_child(scroll_layer, arrivals_layer);
   
   // set default content for window
   num_arrivals=1;
   num_arrivals_visible=1;
   num_arrivals_favourites=0;
+  arrival_selected=-1;
   arrivals[0].Route[0]=0;
+  arrivals[0].Eta=0;
+  arrivals[0].Trip=trip_selected;
   strncpy(arrivals[0].Destination, "Fetching data...", MAX_DESTINATION_LENGTH);
-  arrivals[0].Eta[0]=0;
 }
 
 void window_list_unload(Window *window) {
   // Destroy the layer
   platform = -1;
+  trip_selected=0;
   app_timer_cancel(timer);
   layer_destroy(arrivals_layer);
   scroll_layer_destroy(scroll_layer);
@@ -940,7 +1139,22 @@ void window_number_unload(Window *window) {
 // *****************************************************************************************************
 // MAIN
 // *****************************************************************************************************
-
+static void wakeup_handler(WakeupId id, int32_t reason) {
+  APP_LOG(APP_LOG_LEVEL_INFO, "woken up! id:%d, reason:%d", (int)id,(int)reason);
+  if (STORAGE_KEY_EARLY_WARNING==reason) {
+    if (window_stack_contains_window(window_list)) {
+      window_stack_remove(window_list, true); // this will also cancel the active timer
+    }
+    persist_read_data(STORAGE_KEY_EARLY_WARNING, &early_warning, sizeof(early_warning));
+    persist_delete(STORAGE_KEY_EARLY_WARNING);
+    platform=early_warning.Platform;
+    trip_selected=early_warning.Trip;
+    APP_LOG(APP_LOG_LEVEL_INFO, "platform:%d, trip:%d", (int)platform,(int)trip_selected);
+    window_stack_push(window_list, true /* Animated */);
+    fetch_arrivals();
+  }
+}
+  
 void init(void) {
   window_menu = window_create();
   // Setup the window handlers
@@ -976,6 +1190,7 @@ void init(void) {
   bitmap_tick=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_TICK);
   bitmap_option_tick=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_OPTION_TICK);
   bitmap_option_box=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_OPTION_BOX);
+  bitmap_bell=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_BELL);
   
 	// Register AppMessage handlers
 	app_message_register_inbox_received(inbox_received_handler); 
@@ -1000,12 +1215,29 @@ void init(void) {
     strcat(plats,platforms[num_platforms].Number);
     strcat(plats,";");
     num_platforms++;
-  }    
+  }
+  
+  wakeup_service_subscribe(wakeup_handler);
+  window_stack_push(window_menu, true /* Animated */);
+  
+  if (launch_reason() == APP_LAUNCH_WAKEUP) {
+    // Get details and handle the event
+    WakeupId id = 0;
+    int32_t reason = 0;
+    wakeup_get_launch_event(&id, &reason);
+    wakeup_handler(id,reason);
+  } else {
+    if (persist_exists(STORAGE_KEY_EARLY_WARNING)) {
+      persist_read_data(STORAGE_KEY_EARLY_WARNING, &early_warning, sizeof(early_warning));
+    } else {
+      early_warning.Trip=0;
+    }
+    if (num_platforms && autoselect) fetch_nearest_platforms(plats);
+  }
+  
   data_exists = (num_platforms>0 || persist_exists(STORAGE_KEY_AUTOSELECT) );
-  if (num_platforms && autoselect) fetch_nearest_platforms(plats);
   if (stored_version < CURRENT_STORAGE_VERSION) persist_write_int(STORAGE_KEY_VERSION, CURRENT_STORAGE_VERSION);
 
-  window_stack_push(window_menu, true /* Animated */);
   
   // APP_LOG(APP_LOG_LEVEL_INFO, "sizeof arrivals:%d, outbox:%d", (int)sizeof(arrivals), (int)app_message_outbox_size_maximum());
 }
@@ -1022,6 +1254,7 @@ void deinit(void) {
   gbitmap_destroy(bitmap_tick);
   gbitmap_destroy(bitmap_option_tick);
   gbitmap_destroy(bitmap_option_box);
+  gbitmap_destroy(bitmap_bell);
 }
 
 int main(void) {
