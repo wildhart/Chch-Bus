@@ -119,7 +119,7 @@ function XMLtoarray(data) {
       for (var e=0; e<trips.length; e++) {
         var eta=trips[e].match(/ETA="(\d+)/)[1];
         var trip=trips[e].match(/TripNo="(\d+)/)[1];
-        busses.push({route:route, destination:dest_name.replace(/&amp;/g, "&"), eta:eta, trip:trip});
+        busses.push({route:route, destination:dest_name.replace(/&amp;/g, "&").substr(0,32), eta:eta, trip:trip});
       }
     }
   }

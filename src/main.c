@@ -86,7 +86,7 @@ static MenuLayer *menu_layer_nearest;
 #define NUMBER_OFFSET 24
 #define NUMBER_ORIGIN 2 // Action bar layer =20px wide
 #define valid_selector() (nearest[0].Number[0]!='\0')
-char *number_selector = "50529"; // Central station
+char *number_selector = "53088"; // Central station - changed 29/5/15
 static Window *window_number;
 static Layer *number_layer;
 ActionBarLayer *action_bar_layer;
@@ -135,6 +135,7 @@ static WakeupId wakeup_id; // this is for relaunching the app when a bus or stop
 #define HELP_FLAGS_FULLSCREEN  4
 #define HELP_FLAGS_ALARM  8
 uint help_flags=0;
+uint old_help_flags=0;
 
 // *****************************************************************************************************
 // MESSAGES
@@ -145,6 +146,7 @@ static void redraw_arrivals() {
   GRect bounds = layer_get_frame(scroll_layer_get_layer(scroll_layer));
   uint height=(num_arrivals_visible<=4 || trip_selected>0) ? 168-PLATFORM_HEIGHT-16 : (ARRIVAL_HEIGHT+ARRIVAL_HEIGHT*num_arrivals_visible);
   scroll_layer_set_content_size(scroll_layer, GSize(bounds.size.w, PLATFORM_HEIGHT+height));
+  scroll_layer_set_content_offset(scroll_layer, GPoint(0,0), true);
   layer_set_frame(arrivals_layer, GRect(0,0, bounds.size.w, PLATFORM_HEIGHT+height));
   layer_mark_dirty(scroll_layer_get_layer(scroll_layer));
 }
@@ -169,7 +171,7 @@ static void fetch_arrivals() {
     redraw_arrivals();
     
     // set timer for next fetch.
-    timer = app_timer_register(20000, fetch_arrivals, NULL);
+    timer = app_timer_register(30000, fetch_arrivals, NULL); // metro info API data is only updated every 30 seconds.
   }
 }
 
@@ -186,10 +188,10 @@ void set_wakeup(uint reason, uint mins) {
     wakeup_id=0;
   }
   if (mins) {
-    wakeup_id = wakeup_schedule(time(NULL)+60*mins,reason,true);
+    wakeup_id = wakeup_schedule(time(NULL)+60*mins,reason,false);
     if (wakeup_id==E_RANGE) set_wakeup(reason,mins-1);
   }
-  APP_LOG(APP_LOG_LEVEL_INFO, "set wakeup id:%d, reason:%d, mins:%d", (int)wakeup_id,reason,mins);
+  //APP_LOG(APP_LOG_LEVEL_INFO, "set wakeup id:%d, reason:%d, mins:%d", (int)wakeup_id,reason,mins);
 }
 
 void set_early_warning(const uint platform, const uint trip, uint mins, uint eta) {
@@ -209,7 +211,6 @@ void set_early_warning(const uint platform, const uint trip, uint mins, uint eta
 static void process_arrivals(char *source) {
   uint columns=4;
   char bus[columns][MAX_NAME_LENGTH+1];
-  uint s=0; // source offset
   uint c=0; // column (0=route, 1=destination, 2 = eta)
   bool selected_trip_still_visible = false;
   num_arrivals=0;
@@ -217,13 +218,14 @@ static void process_arrivals(char *source) {
   num_arrivals_visible=0;
   single_arrival_visible_index=-1;
   arrival_selected=-1;
-  while (source[s] && num_arrivals<MAX_ARRIVALS) {
+  while (*source && num_arrivals<MAX_ARRIVALS) {
     uint d=0; // destination offset
-    while (source[s] && source[s]!=';' && d<MAX_NAME_LENGTH) {
-      bus[c][d++]=source[s++];
+    while (*source && *source!=';' && d<MAX_NAME_LENGTH) {
+      bus[c][d++]=*source++;
     }
+    while (*source && *source!=';') source++;
     bus[c++][d]=0;
-    s++;
+    source++;
     if (c==columns) {
       strncpy(arrivals[num_arrivals].Route, bus[0], MAX_ROUTE_LENGTH);
       strncpy(arrivals[num_arrivals].Destination, bus[1], MAX_DESTINATION_LENGTH);
@@ -283,16 +285,16 @@ static void fetch_nearest_platforms(char *favourites) {
 static void process_platforms(char *source) {
   uint columns=3;
   char bus[columns][MAX_NAME_LENGTH+1];
-  uint s=0; // source offset
   uint c=0; // column (0=number, 1=name, 3=road)
   num_nearest=0;
-  while (source[s] && num_arrivals<MAX_ARRIVALS) {
+  while (*source && num_arrivals<MAX_ARRIVALS) {
     uint d=0; // destination offset
-    while (source[s] && source[s]!=';' && d<MAX_NAME_LENGTH) {
-      bus[c][d++]=source[s++];
+    while (*source && *source!=';' && d<MAX_NAME_LENGTH) {
+      bus[c][d++]=*source++;
     }
+    while (*source && *source!=';') source++;
     bus[c++][d]=0;
-    s++;
+    source++;
     if (c==columns) {
       strncpy(nearest[num_nearest].Number, bus[0], MAX_PL_NUM_LENGTH);
       strncpy(nearest[num_nearest].Name, bus[1], MAX_NAME_LENGTH);
@@ -318,14 +320,14 @@ static void check_platform(char *platform) {
 static void process_check_platform(char *source) {
   //APP_LOG(APP_LOG_LEVEL_INFO, "Platform checked: %s", source);
   char bus[3][MAX_NAME_LENGTH+1];
-  uint s=0; // source offset
   for (int c=0; c<3; c++) {
     uint d=0; // destination offset
-    while (source[s] && source[s]!=';' && d<MAX_NAME_LENGTH) {
-      bus[c][d++]=source[s++];
+    while (*source && *source!=';' && d<MAX_NAME_LENGTH) {
+      bus[c][d++]=*source++;
     }
+    while (*source && *source!=';') source++;
     bus[c][d]=0;
-    s++;
+    source++;
   }
   num_nearest=0;
   strncpy(nearest[num_nearest].Name, bus[0], MAX_NAME_LENGTH);
@@ -352,27 +354,26 @@ static void fetch_routes_for_platforms(char *platforms) {
 static void process_routes(char *source) {
   const uint columns = 2;
   char bus[columns][MAX_NAME_LENGTH+1];
-  uint s=0; // source offset
   uint c=0; // column (0=number, 1=name, 3=road)
   num_routes=0;
-  
+  char *scopy=source;
   // first count number of routes to allocate enough memory.
-  while (source[s]) {
-    if (source[s++]==';') num_routes++; // this will counnt twice the number of routes
+  while (*scopy) {
+    if (*scopy++==';') num_routes++; // this will counnt twice the number of routes
   }
   
   struct route *r=malloc( (num_routes/columns) * sizeof(struct route)); // num_routes is atually the number of semicolons
   routes = r;
   
   num_routes=0;
-  s=0;
-  while (source[s]) {
+  while (*source) {
     uint d=0; // destination offset
-    while (source[s] && source[s]!=';' && d<MAX_NAME_LENGTH) {
-      bus[c][d++]=source[s++];
+    while (*source && *source!=';' && d<MAX_NAME_LENGTH) {
+      bus[c][d++]=*source++;
     }
+    while (*source && *source!=';') source++;
     bus[c++][d]=0;
-    s++;
+    source++;
     if (c==columns) {
       strncpy(r[num_routes].Route, bus[0], MAX_ROUTE_LENGTH);
       strncpy(r[num_routes].Destination, bus[1], MAX_DESTINATION_LENGTH);
@@ -388,19 +389,19 @@ static void process_routes(char *source) {
   
 static void process_settings(char *source) {
   char bus[4][MAX_NAME_LENGTH+1];
-  uint s=0; // source offset
   uint c=0; // column (0=number, 1=name, 3=road)
 //  uint32_t version=0;
   num_platforms=0;
   char plats[(MAX_PL_NUM_LENGTH+1)*MAX_PLATFORMS]="";
   
-  while (source[s]) {
+  while (*source) {
     uint d=0; // destination offset
-    while (source[s] && source[s]!=';' && source[s]!='|' && d<MAX_NAME_LENGTH) {
-      bus[c][d++]=source[s++];
+    while (*source && *source!=';' && *source!='|' && d<MAX_NAME_LENGTH) {
+      bus[c][d++]=*source++;
     }
+    while (*source && *source!=';' && *source!='|') source++;
     bus[c++][d]=0;
-    if (source[s]=='|') {
+    if (*source=='|') {
       int key = atoi(bus[0]);
       if (key>STORAGE_KEY_PLATFORM) key = STORAGE_KEY_PLATFORM;
       switch (key) {
@@ -417,6 +418,8 @@ static void process_settings(char *source) {
           snprintf(favourite_routes_list,MAX_FAV_ROUTES_LIST_LENGTH,"%s",bus[1]);
           persist_write_string(STORAGE_KEY_FAVOURITE_ROUTES_LIST, favourite_routes_list);
           break;
+        case STORAGE_KEY_HELP_FLAGS:
+          persist_write_int(STORAGE_KEY_HELP_FLAGS, old_help_flags=help_flags=(atoi(bus[1])));
         case STORAGE_KEY_PLATFORM:
           snprintf(platforms[num_platforms].Number,MAX_PL_NUM_LENGTH,"%s",bus[1]);
           snprintf(platforms[num_platforms].Name,MAX_NAME_LENGTH,"%s",bus[2]);
@@ -432,7 +435,7 @@ static void process_settings(char *source) {
       }
       c=0;
     }
-    s++;
+    source++;
   }
 
   if (num_platforms && autoselect) fetch_nearest_platforms(plats);
@@ -451,6 +454,7 @@ static void save_settings_to_phone() {
   len+=snprintf(message+len,size-len,"%d;%d|",(int)STORAGE_KEY_AUTOSELECT, (int)autoselect);
   len+=snprintf(message+len,size-len,"%d;%d|",(int)STORAGE_KEY_FAVOURITE_ROUTES_SHOW, (int)favourite_routes_show);
   len+=snprintf(message+len,size-len,"%d;%s|",(int)STORAGE_KEY_FAVOURITE_ROUTES_LIST, favourite_routes_list);
+  len+=snprintf(message+len,size-len,"%d;%d|",(int)STORAGE_KEY_HELP_FLAGS, help_flags);
   for (int a=0; a<num_platforms; a++) {
     len+=snprintf(message+len,size-len,"%d;%s;%s;%s|",STORAGE_KEY_PLATFORM+a,platforms[a].Number,platforms[a].Name,platforms[a].Road);
   }
@@ -975,6 +979,10 @@ void window_list_unload(Window *window) {
   app_timer_cancel(timer);
   layer_destroy(arrivals_layer);
   scroll_layer_destroy(scroll_layer);
+  if (help_flags!=old_help_flags) {
+    persist_write_int(STORAGE_KEY_HELP_FLAGS, old_help_flags=help_flags);
+    save_settings_to_phone();
+  }
 }
 
 // This initializes the menu upon window load
@@ -1140,7 +1148,8 @@ void window_number_unload(Window *window) {
 // MAIN
 // *****************************************************************************************************
 static void wakeup_handler(WakeupId id, int32_t reason) {
-  APP_LOG(APP_LOG_LEVEL_INFO, "woken up! id:%d, reason:%d", (int)id,(int)reason);
+  //APP_LOG(APP_LOG_LEVEL_INFO, "woken up! id:%d, reason:%d", (int)id,(int)reason);
+  wakeup_cancel(wakeup_id);
   if (STORAGE_KEY_EARLY_WARNING==reason) {
     if (window_stack_contains_window(window_list)) {
       window_stack_remove(window_list, true); // this will also cancel the active timer
@@ -1149,7 +1158,7 @@ static void wakeup_handler(WakeupId id, int32_t reason) {
     persist_delete(STORAGE_KEY_EARLY_WARNING);
     platform=early_warning.Platform;
     trip_selected=early_warning.Trip;
-    APP_LOG(APP_LOG_LEVEL_INFO, "platform:%d, trip:%d", (int)platform,(int)trip_selected);
+    //APP_LOG(APP_LOG_LEVEL_INFO, "platform:%d, trip:%d", (int)platform,(int)trip_selected);
     window_stack_push(window_list, true /* Animated */);
     fetch_arrivals();
   }
@@ -1201,9 +1210,10 @@ void init(void) {
   
   // Read stored data from watch.
   num_platforms=0;
-  uint32_t stored_version = persist_read_int(STORAGE_KEY_VERSION); // defaults to 0 if key is missing.
-  autoselect=persist_read_bool(STORAGE_KEY_AUTOSELECT);
-  favourite_routes_show=persist_read_bool(STORAGE_KEY_FAVOURITE_ROUTES_SHOW); // introduced in storage version 2
+  uint32_t stored_version = persist_read_int(STORAGE_KEY_VERSION); // defaults to 0 if key is missing
+  autoselect=persist_read_bool(STORAGE_KEY_AUTOSELECT); // defaults to false anyway
+  favourite_routes_show=persist_read_bool(STORAGE_KEY_FAVOURITE_ROUTES_SHOW); // introduced in storage version 2, defaults to false anyway
+  old_help_flags=help_flags=persist_read_int(STORAGE_KEY_HELP_FLAGS);  // introduced in storage version 2, defaults to 0 anyway
   if (persist_exists(STORAGE_KEY_FAVOURITE_ROUTES_LIST)) { // introduced in storage version 2
     persist_read_string(STORAGE_KEY_FAVOURITE_ROUTES_LIST, favourite_routes_list, MAX_FAV_ROUTES_LIST_LENGTH);
   } else {
@@ -1227,7 +1237,7 @@ void init(void) {
     wakeup_get_launch_event(&id, &reason);
     wakeup_handler(id,reason);
   } else {
-    if (persist_exists(STORAGE_KEY_EARLY_WARNING)) {
+    if (persist_exists(STORAGE_KEY_EARLY_WARNING)) { // introduced in storage version 2
       persist_read_data(STORAGE_KEY_EARLY_WARNING, &early_warning, sizeof(early_warning));
     } else {
       early_warning.Trip=0;
