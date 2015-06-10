@@ -2,6 +2,7 @@ var platformNo = null;        // number of current platform
 var platformsOBJ=null;        // object full of platform data
 var get_platforms_list = [];  // list of platforms for which routes need to be fetched
 var get_platforms_routes;     // will store list of routes for favourite platforms
+var buffer_size;
 
 // variables used for calculating distance between 2 coordinates
 var deg2rad = 0.017453292519943295; // === Math.PI / 180
@@ -16,24 +17,26 @@ var location_reason=null;
 
 Pebble.addEventListener('ready', function(e) {
   var settings=localStorage.getItem("settings");
+	console.log("Sending message: KEY_JS_READY " + settings);
   Pebble.sendAppMessage({'KEY_JS_READY': (settings) ? settings : ""});
 });
 
 // Called when incoming message from the Pebble is received
 Pebble.addEventListener("appmessage",	function(e) {
-	//console.log("Received message: " + JSON.stringify(e.payload));
+	console.log("Received message: " + JSON.stringify(e.payload));
   for (var p in e.payload) {
-    if (p=="KEY_ARRIVALS") { 
-      platformNo=e.payload.KEY_ARRIVALS;
+    if (p=="KEY_ARRIVALS") {
+      var data=e.payload.KEY_ARRIVALS.split(";");
+      buffer_size=data[0];
+      platformNo=data[1];
       get_platforms_list=[];
       update();
     } else if (p=="KEY_LOCATION") {
       if ((typeof e.payload.KEY_LOCATION)=='number') { // get locations of all platforms and return nearest N
         location_reason='all';
         nearest_limit = e.payload.KEY_LOCATION;
-      } else {  // find nearest favourite platform
-        location_reason=e.payload.KEY_LOCATION;
-        nearest_limit = 1;
+      } else {  // find distance of favourite platforms
+        location_reason=e.payload.KEY_LOCATION; // this is the list of favourite platforms
       }
       if (!platformsOBJ) {
         get_platforms('location'); // will call get_location() when done.
@@ -47,7 +50,6 @@ Pebble.addEventListener("appmessage",	function(e) {
         check_platform(e.payload.KEY_CHECK_PLATFORM);
       }
     } else if (p=="KEY_SAVE_SETTINGS") {
-      //console.log("KEY_SAVE_SETTINGS: " + JSON.stringify(e.payload));
       localStorage.setItem('settings',e.payload.KEY_SAVE_SETTINGS);
     } else if (p=="KEY_GET_ROUTES") {
       get_platforms_list=e.payload.KEY_GET_ROUTES.split(';'); // there is a trailing ; so last item in array is blank
@@ -62,6 +64,7 @@ Pebble.addEventListener("appmessage",	function(e) {
 
 function check_platform(platform) {
   if (!platform) return; // this was used just to cache the platforms
+	console.log("Sending message: KEY_CHECK_PLATFORM " + JSON.stringify(platformsOBJ[platform]));
   Pebble.sendAppMessage({'KEY_CHECK_PLATFORM':
                         platformsOBJ[platform] ? platformsOBJ[platform].RoadName+";"+platformsOBJ[platform].Name+';'+bearing_to_text(platformsOBJ[platform].BearingToRoad)+";"
                                                : ";Invalid platform;;"
@@ -82,7 +85,7 @@ function update() {
         var message='';
         //platformName=data.match(/<Platform .* Name="(.*?)"/i)[1];
         if (get_platforms_list.length) {
-          for (var a in busses) if (get_platforms_routes[busses[a].route]===undefined) get_platforms_routes[busses[a].route] = busses[a].destination;
+          for (var a in busses) if (get_platforms_routes[busses[a].route]===undefined) get_platforms_routes[busses[a].route] = busses[a].name.substr(0,14);
           platformNo=get_platforms_list.shift();
           if (platformNo) {
             update();
@@ -91,12 +94,14 @@ function update() {
             for (a in get_platforms_routes) {
               message+=a+";"+get_platforms_routes[a]+";";
             }
+            console.log("Sending message: KEY_GET_ROUTES "+message);
             Pebble.sendAppMessage({'KEY_GET_ROUTES':message});
             platformNo="";
           }
         } else {
           message=objToString(busses);
-          Pebble.sendAppMessage({'KEY_ARRIVALS':message});
+            console.log("Sending message: KEY_ARRIVALS "+message.substr(0,buffer_size));
+          Pebble.sendAppMessage({'KEY_ARRIVALS':message.substr(0,buffer_size)});
         }
       } else { console.log('Error'); }
     } else { console.log('Error 2'); }
@@ -108,10 +113,10 @@ function XMLtoarray(data) {
   // return bus arrival data, sorted by ETA
   var busses=[];
   var routes=data.match(/<Route ([\S\s]*?)<\/Route>/gi);
-  //if (!routes) return [{route:'', destination: 'No buses due in', eta:''},{route:'', destination: 'the next '+data.match(/MaxArrivalScope="(\d*)/)[1]+' mins', eta:''}];
-  if (!routes) return [{route:'', destination: 'No buses due in the next', eta:data.match(/MaxArrivalScope="(\d*)/)[1]}];
+  if (!routes) return [{route:'', destination: 'No buses due  in the next', eta:data.match(/MaxArrivalScope="(\d*)/)[1]}];
   for (var r=0; r<routes.length; r++) {
     var route=routes[r].match(/RouteNo="(\S*)"/i)[1];
+    var name=routes[r].match(/Name="(.*?)"/i)[1];
     var destinations=routes[r].match(/<Destination ([\S\s]*?)<\/Destination>/gi);
     for (var d=0; d<destinations.length; d++) {
       var dest_name=destinations[d].match(/Name="(.*?)"/i)[1];
@@ -119,7 +124,7 @@ function XMLtoarray(data) {
       for (var e=0; e<trips.length; e++) {
         var eta=trips[e].match(/ETA="(\d+)/)[1];
         var trip=trips[e].match(/TripNo="(\d+)/)[1];
-        busses.push({route:route, destination:dest_name.replace(/&amp;/g, "&").substr(0,32), eta:eta, trip:trip});
+        busses.push({route:route, name:name, destination:dest_name.replace(/&amp;/g, "&").substr(0,32), eta:eta, trip:trip});
       }
     }
   }
@@ -144,7 +149,6 @@ function locationSuccess(pos) {
   lon=pos.coords.longitude;
   if (lat>0) {
     lat = -43.533121;  lon = 172.626011; // Chch hospital
-    //lat = -43.589734;  lon = 172.510676; // Prebbleton
   }
   
   lat *= deg2rad; // convert to radians
@@ -163,9 +167,9 @@ function locationError(err) {
 
 function get_location() {
   var locationOptions = {
-    enableHighAccuracy: false, 
-    maximumAge: 10000, 
-    timeout: 10000
+    enableHighAccuracy: true, 
+    maximumAge: 10000, // in milliseconds
+    timeout: 40000
   };
   // Make an asynchronous request
   navigator.geolocation.getCurrentPosition(locationSuccess, locationError, locationOptions);
@@ -207,6 +211,7 @@ function calculate_distance_all() {
     //console.log(nearest[i].PlatformNo+";"+dist+plat.Name.substr(0,24)+";"+plat.RoadName + ' - ' + bearing_to_text(plat.BearingToRoad)+";");
   }
   //console.log(items.length);
+  console.log("Sending message: KEY_LOCATION "+items);
   Pebble.sendAppMessage({'KEY_LOCATION':items});
 }
 
@@ -215,17 +220,27 @@ function calculate_distance_favourites() {
   var plat;
   var dist;
   var index;
-  var platforms = location_reason.split(";");
+  var data=location_reason.split("|");
+  var reason=data[0];
+  var platforms = data[1].split(";");
+  var items="";
   
   for (var i=0; i<platforms.length-1; i++) {
     plat=platformsOBJ[platforms[i]];
     dist=distance(lat,lon,plat.Lat*1,plat.Long);
+    items+=Math.round(dist)+";";
     if (dist<nearest) {
       nearest=dist;
       index=i;
     }
   }
-  Pebble.sendAppMessage({'KEY_NEAREST_FAV':index});
+  if (reason=='auto') { // only send index of nearest favourite
+    console.log("Sending message: KEY_NEAREST_FAV "+index);
+    Pebble.sendAppMessage({'KEY_NEAREST_FAV':index});
+  } else if (reason=='alarm') { // send distance of all favourites, for the distance alarm window
+    console.log("Sending message: KEY_DISTANCE_FAV "+items);
+    Pebble.sendAppMessage({'KEY_DISTANCE_FAV':items});
+  }
 }
 
 function bearing_to_text(bearing) {
