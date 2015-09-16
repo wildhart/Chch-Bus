@@ -2,6 +2,7 @@
     "appKeys": {
         "KEY_ARRIVALS": 0,
         "KEY_CHECK_PLATFORM": 2,
+        "KEY_DISTANCE_FAV": 7,
         "KEY_GET_ROUTES": 6,
         "KEY_JS_READY": 3,
         "KEY_LOCATION": 1,
@@ -17,6 +18,17 @@
     "resources": {
         "media": [
             {
+                "file": "images/menu_icon.png",
+                "menuIcon": true,
+                "name": "IMAGE_APP_ICON",
+                "type": "png"
+            },
+            {
+                "file": "images/refresh.png",
+                "name": "IMAGE_REFRESH",
+                "type": "png"
+            },
+            {
                 "file": "images/bell.png",
                 "name": "IMAGE_BELL",
                 "type": "png"
@@ -29,12 +41,6 @@
             {
                 "file": "images/option_menu_tick.png",
                 "name": "IMAGE_OPTION_TICK",
-                "type": "png"
-            },
-            {
-                "file": "images/Image1.png",
-                "menuIcon": true,
-                "name": "IMAGE_APP_ICON",
                 "type": "png"
             },
             {
