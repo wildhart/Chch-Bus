@@ -1,8 +1,8 @@
 #include "pebble.h"
 
 // include these two lines in final build to remove logging
-#undef APP_LOG
-#define APP_LOG(level, fmt, args... )
+//#undef APP_LOG
+//#define APP_LOG(level, fmt, args... )
   
 #define LOG_HEAP(text) APP_LOG(APP_LOG_LEVEL_INFO, "heap: %d, used: %d, free: %d, %s %s",  heap_bytes_used()+heap_bytes_free(), heap_bytes_used(), heap_bytes_free(), __func__, text)
 
@@ -520,6 +520,7 @@ static void process_settings(char *source) {
           break;
         case STORAGE_KEY_HELP_FLAGS:
           persist_write_int(STORAGE_KEY_HELP_FLAGS, old_help_flags=help_flags=(atoi(bus[1])));
+          break;
         case STORAGE_KEY_PLATFORM:
           snprintf(platforms[num_platforms].Number,MAX_PL_NUM_LENGTH,"%s",bus[1]);
           snprintf(platforms[num_platforms].Name,MAX_NAME_LENGTH,"%s",bus[2]);
@@ -716,15 +717,17 @@ static void menu_cell_draw_platform(GContext* ctx, const Layer *cell_layer, char
   char road_only[MAX_ROAD_LENGTH+1];
   strncpy(road_only,road,MAX_ROAD_LENGTH);
   char *heading=strstr(road_only," -");
-  *heading='\0';
-  heading+=3;
+  if (heading) {
+    *heading='\0';
+    heading+=3;
+  }
     
   GFont font_24_bold = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
   GFont font_18 = fonts_get_system_font(FONT_KEY_GOTHIC_18);
     
   graphics_context_set_text_color(ctx, GColorBlack);
   graphics_draw_text(ctx, road_only, font_24_bold, GRect(4, -4, bounds.size.w-8-20, 4+18), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
-  graphics_draw_text(ctx, heading  , font_24_bold, GRect(bounds.size.w-30-4, -4, 30, 4+18), GTextOverflowModeFill, GTextAlignmentRight, NULL);
+  if (heading) graphics_draw_text(ctx, heading  , font_24_bold, GRect(bounds.size.w-30-4, -4, 30, 4+18), GTextOverflowModeFill, GTextAlignmentRight, NULL);
   graphics_draw_text(ctx, name     , font_18, GRect(4, 20, bounds.size.w-8, 14), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
 }
 
