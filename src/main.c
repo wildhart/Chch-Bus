@@ -1,8 +1,8 @@
 #include "pebble.h"
 
 // include these two lines in final build to remove logging
-//#undef APP_LOG
-//#define APP_LOG(level, fmt, args... )
+#undef APP_LOG
+#define APP_LOG(level, fmt, args... )
   
 #define LOG_HEAP(text) APP_LOG(APP_LOG_LEVEL_INFO, "heap: %d, used: %d, free: %d, %s %s",  heap_bytes_used()+heap_bytes_free(), heap_bytes_used(), heap_bytes_free(), __func__, text)
 
