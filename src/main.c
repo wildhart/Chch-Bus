@@ -1,8 +1,8 @@
 #include "pebble.h"
 
 // include these two lines in final build to remove logging
-//#undef APP_LOG
-//#define APP_LOG(level, fmt, args... )
+#undef APP_LOG
+#define APP_LOG(level, fmt, args... )
   
 #define LOG_HEAP(text) APP_LOG(APP_LOG_LEVEL_INFO, "heap: %d, used: %d, free: %d, %s %s",  heap_bytes_used()+heap_bytes_free(), heap_bytes_used(), heap_bytes_free(), __func__, text)
 
@@ -385,6 +385,7 @@ static void process_platforms(char *source) {
   char bus[columns][MAX_NAME_LENGTH+1];
   uint c=0; // column (0=number, 1=name, 3=road)
   num_nearest=0;
+  num_routes=0;
   while (*source && num_arrivals<MAX_ARRIVALS) {
     uint d=0; // destination offset
     while (*source && *source!=';' && d<MAX_NAME_LENGTH) {
@@ -455,6 +456,7 @@ static void process_routes(char *source) {
   char bus[columns][MAX_NAME_LENGTH+1];
   uint c=0; // column (0=number, 1=name, 3=road)
   num_routes=0;
+  num_nearest=0;
   char *scopy=source;
   // first count number of routes to allocate enough memory.
   while (*scopy) {
@@ -708,13 +710,32 @@ static void menu_draw_header_callback(GContext* ctx, const Layer *cell_layer, ui
   }
 }
 
+static void menu_cell_draw_platform(GContext* ctx, const Layer *cell_layer, char *road, char *name) {
+  
+  GRect bounds = layer_get_frame(cell_layer);
+  char road_only[MAX_ROAD_LENGTH+1];
+  strncpy(road_only,road,MAX_ROAD_LENGTH);
+  char *heading=strstr(road_only," -");
+  *heading='\0';
+  heading+=3;
+    
+  GFont font_24_bold = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+  GFont font_18 = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+    
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, road_only, font_24_bold, GRect(4, -4, bounds.size.w-8-20, 4+18), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+  graphics_draw_text(ctx, heading  , font_24_bold, GRect(bounds.size.w-30-4, -4, 30, 4+18), GTextOverflowModeFill, GTextAlignmentRight, NULL);
+  graphics_draw_text(ctx, name     , font_18, GRect(4, 20, bounds.size.w-8, 14), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+}
+
 // This is the menu item draw callback where you specify what each item should look like
 static void menu_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
   // Determine which section we're going to draw in
   switch (cell_index->section) {
     case MENU_SECTION_FAVS:
     case MENU_SECTION_REMOVE:
-      menu_cell_basic_draw(ctx, cell_layer, platforms[cell_index->row].Road, platforms[cell_index->row].Name, NULL);
+      // menu_cell_basic_draw(ctx, cell_layer, platforms[cell_index->row].Road, platforms[cell_index->row].Name, NULL);
+      menu_cell_draw_platform(ctx, cell_layer, platforms[cell_index->row].Road, platforms[cell_index->row].Name);
       break;
 
     default:
@@ -798,9 +819,14 @@ static void menu_nearest_draw_header_callback(GContext* ctx, const Layer *cell_l
    menu_cell_basic_header_draw(ctx, cell_layer, (KEY_LOCATION==last_message ? "Nearest stops" : "Favourite Routes") );
 }
 static void menu_nearest_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
-  if (KEY_LOCATION==last_message || num_routes==0) {
+  if (num_nearest==1) {
+    // "Getting location" or "Getting routes for favourite stops"
     menu_cell_basic_draw(ctx, cell_layer, nearest[cell_index->row].Road, nearest[cell_index->row].Name, NULL);
-  } else {
+  } else if (KEY_LOCATION==last_message) {
+    // list of nearest platforms
+    menu_cell_draw_platform(ctx, cell_layer, nearest[cell_index->row].Road, nearest[cell_index->row].Name);
+  } else { //KEY_GET_ROUTES==last_message
+    // list of platforms for favourte stops - display with checkbox.
     GRect bounds = layer_get_frame(cell_layer);
     
     GFont font_24_bold = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);

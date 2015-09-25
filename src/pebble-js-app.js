@@ -264,22 +264,28 @@ function distance(lat1, lon1, lat2, lon2) { // all parameters should already be 
 function get_platforms(reason) {
   var date=new Date();
   var old_date=localStorage.getItem("platforms_date");
-  if (old_date && (date-old_date) < 7 * 24 * 60 * 60 * 1000 ) { // if data is more than 7 days old (in milliseconds)
+  if (old_date && (date-old_date) < 7 * 24 * 60 * 60 * 1000 ) { // if data is less than 7 days old (in milliseconds)
+    console.log("Using cached platform data");
     parse_platforms(localStorage.getItem('platforms'), reason);
     return;
   }
   var req = new XMLHttpRequest();
   req.open('GET', 'http://rtt.metroinfo.org.nz/rtt/public/utility/file.aspx?ContentType=SQLXML&Name=JPPlatform', true);
+  console.log("Fetching new platform data...");
   req.onreadystatechange  = function(e) {
     if (req.readyState == 4) {
       if(req.status == 200) {
         //console.log('AJAX Resonse: ' + req.responseText);
         localStorage.setItem('platforms',req.responseText);
         localStorage.setItem('platforms_date',date.valueOf()); // milliseconds
+        console.log("Parsing new platform data...");
         parse_platforms(req.responseText,reason);
       } else {
-        console.log('Error');
-        if (old_date) parse_platforms(localStorage.getItem('platforms'),reason);
+        console.log("Couldn't fetch platforms (status="+req.status+")");
+        if (old_date) {
+          console.log("Using cached platform data");
+          parse_platforms(localStorage.getItem('platforms'),reason);
+        }
       }
     }
   };
