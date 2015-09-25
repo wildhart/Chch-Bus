@@ -852,7 +852,7 @@ static void menu_nearest_select_callback(MenuLayer *menu_layer, MenuIndex *cell_
     window_stack_remove(window_menu_nearest, false /* Animated */);
     platform = num_platforms-1;
     window_stack_push(window_list, true /* Animated */);
-  } else if (KEY_GET_ROUTES==last_message && num_routes) {
+  } else if (num_routes) {
     char rte[MAX_ROUTE_LENGTH+3];
     snprintf(rte,MAX_ROUTE_LENGTH+3,",%s,",routes[cell_index->row].Route);
     char *start = check_if_favourite_route(routes[cell_index->row].Route);

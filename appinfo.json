@@ -69,7 +69,7 @@
     "shortName": "Chch Bus",
     "uuid": "6094e32b-cc6b-40cb-8761-2dc79d8ee554",
     "versionCode": 1,
-    "versionLabel": "1.3",
+    "versionLabel": "1.32",
     "watchapp": {
         "watchface": false
     }
