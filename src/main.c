@@ -1284,22 +1284,32 @@ static void distance_layer_update_callback(Layer *layer, GContext *ctx) { // scr
   
   GFont font_roboto_condensed_21 = fonts_get_system_font(FONT_KEY_ROBOTO_CONDENSED_21);
   GFont font_gothic_18 = fonts_get_system_font(FONT_KEY_GOTHIC_18);
-  GRect gr_road = GRect(2, 20, 120, 24);
-  GRect gr_name = GRect(2, 44, 120, 20);
+  GRect gr_road = GRect(3, 20, 118-17, 24);
+  GRect gr_name = GRect(3, 44, 118, 20);
+  GRect gr_heading = GRect(3+118-20, 20, 20, 24);
   GRect gr_alarm = GRect(60, 125, 60, 21);
   GRect gr_invert;
   char text[10];
   
   if (distance_selection==0) {
-    gr_invert=GRect(gr_road.origin.x, gr_road.origin.y+5, gr_road.size.w, gr_name.origin.y+gr_name.size.h-gr_road.origin.y);
+    gr_invert=GRect(gr_road.origin.x-1, gr_road.origin.y+5, gr_name.size.w+2, gr_name.origin.y+gr_name.size.h-gr_road.origin.y);
   } else if (distance_selection==1) {
     gr_invert = GRect(64, 126, 58, 24);
   }
   graphics_fill_rect(ctx, gr_invert, 2, GCornersAll);
   
+  char road_only[MAX_ROAD_LENGTH+1];
+  strncpy(road_only,platforms[distance_alarm.Platform_index].Road,MAX_ROAD_LENGTH);
+  char *heading=strstr(road_only," -");
+  if (heading) {
+    *heading='\0';
+    heading+=3;
+  }
+  
   graphics_context_set_text_color(ctx, distance_selection==0?GColorWhite:GColorBlack);
-  graphics_draw_text(ctx, platforms[distance_alarm.Platform_index].Road, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),  gr_road, GTextOverflowModeFill, GTextAlignmentCenter, NULL); 
-  graphics_draw_text(ctx, platforms[distance_alarm.Platform_index].Name, font_gothic_18,  gr_name, GTextOverflowModeFill, GTextAlignmentCenter, NULL); 
+  graphics_draw_text(ctx, road_only, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),  gr_road, GTextOverflowModeFill, GTextAlignmentLeft, NULL); 
+  if (heading) graphics_draw_text(ctx, heading, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),  gr_heading, GTextOverflowModeFill, GTextAlignmentRight, NULL); 
+  graphics_draw_text(ctx, platforms[distance_alarm.Platform_index].Name, font_gothic_18,  gr_name, GTextOverflowModeFill, GTextAlignmentLeft, NULL); 
   
   graphics_context_set_text_color(ctx, distance_selection==1?GColorWhite:GColorBlack);
   if (distance_alarm.km) snprintf(text,10,"%d km",distance_alarm.km); else snprintf(text,10,"off");
