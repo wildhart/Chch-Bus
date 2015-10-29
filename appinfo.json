@@ -18,29 +18,8 @@
     "resources": {
         "media": [
             {
-                "file": "images/down.png",
-                "name": "IMAGE_DOWN",
-                "type": "png"
-            },
-            {
-                "file": "images/menu_icon.png",
-                "menuIcon": true,
-                "name": "IMAGE_APP_ICON",
-                "type": "png"
-            },
-            {
-                "file": "images/bell.png",
-                "name": "IMAGE_BELL",
-                "type": "png"
-            },
-            {
-                "file": "images/refresh.png",
-                "name": "IMAGE_REFRESH",
-                "type": "png"
-            },
-            {
-                "file": "images/option_menu_tick.png",
-                "name": "IMAGE_OPTION_TICK",
+                "file": "images/up.png",
+                "name": "IMAGE_UP",
                 "type": "png"
             },
             {
@@ -54,13 +33,34 @@
                 "type": "png"
             },
             {
-                "file": "images/up.png",
-                "name": "IMAGE_UP",
+                "file": "images/refresh.png",
+                "name": "IMAGE_REFRESH",
+                "type": "png"
+            },
+            {
+                "file": "images/option_menu_tick.png",
+                "name": "IMAGE_OPTION_TICK",
                 "type": "png"
             },
             {
                 "file": "images/option_menu_box.png",
                 "name": "IMAGE_OPTION_BOX",
+                "type": "png"
+            },
+            {
+                "file": "images/menu_icon.png",
+                "menuIcon": true,
+                "name": "IMAGE_APP_ICON",
+                "type": "png"
+            },
+            {
+                "file": "images/down.png",
+                "name": "IMAGE_DOWN",
+                "type": "png"
+            },
+            {
+                "file": "images/bell.png",
+                "name": "IMAGE_BELL",
                 "type": "png"
             }
         ]
@@ -69,7 +69,7 @@
     "shortName": "Chch Bus",
     "uuid": "6094e32b-cc6b-40cb-8761-2dc79d8ee554",
     "versionCode": 1,
-    "versionLabel": "1.32",
+    "versionLabel": "1.33",
     "watchapp": {
         "watchface": false
     }
