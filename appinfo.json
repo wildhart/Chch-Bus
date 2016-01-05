@@ -18,58 +18,68 @@
     "resources": {
         "media": [
             {
-                "file": "images/up.png",
-                "name": "IMAGE_UP",
-                "type": "png"
-            },
-            {
                 "file": "images/tick.png",
                 "name": "IMAGE_TICK",
-                "type": "png"
-            },
-            {
-                "file": "images/right.png",
-                "name": "IMAGE_RIGHT",
-                "type": "png"
-            },
-            {
-                "file": "images/refresh.png",
-                "name": "IMAGE_REFRESH",
-                "type": "png"
-            },
-            {
-                "file": "images/option_menu_tick.png",
-                "name": "IMAGE_OPTION_TICK",
-                "type": "png"
+                "targetPlatforms": null,
+                "type": "bitmap"
             },
             {
                 "file": "images/option_menu_box.png",
                 "name": "IMAGE_OPTION_BOX",
-                "type": "png"
+                "targetPlatforms": null,
+                "type": "bitmap"
+            },
+            {
+                "file": "images/option_menu_tick.png",
+                "name": "IMAGE_OPTION_TICK",
+                "targetPlatforms": null,
+                "type": "bitmap"
             },
             {
                 "file": "images/menu_icon.png",
                 "menuIcon": true,
                 "name": "IMAGE_APP_ICON",
-                "type": "png"
-            },
-            {
-                "file": "images/down.png",
-                "name": "IMAGE_DOWN",
-                "type": "png"
+                "type": "bitmap"
             },
             {
                 "file": "images/bell.png",
                 "name": "IMAGE_BELL",
-                "type": "png"
+                "type": "bitmap"
+            },
+            {
+                "file": "images/down.png",
+                "name": "IMAGE_DOWN",
+                "targetPlatforms": null,
+                "type": "bitmap"
+            },
+            {
+                "file": "images/up.png",
+                "name": "IMAGE_UP",
+                "targetPlatforms": null,
+                "type": "bitmap"
+            },
+            {
+                "file": "images/refresh.png",
+                "name": "IMAGE_REFRESH",
+                "type": "bitmap"
+            },
+            {
+                "file": "images/right.png",
+                "name": "IMAGE_RIGHT",
+                "targetPlatforms": null,
+                "type": "bitmap"
             }
         ]
     },
-    "sdkVersion": "2",
+    "sdkVersion": "3",
     "shortName": "Chch Bus",
+    "targetPlatforms": [
+        "aplite",
+        "basalt",
+        "chalk"
+    ],
     "uuid": "6094e32b-cc6b-40cb-8761-2dc79d8ee554",
-    "versionCode": 1,
-    "versionLabel": "1.33",
+    "versionLabel": "1.4",
     "watchapp": {
         "watchface": false
     }

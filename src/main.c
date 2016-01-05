@@ -1,12 +1,15 @@
 #include "pebble.h"
 
 // include these two lines in final build to remove logging
-#undef APP_LOG
-#define APP_LOG(level, fmt, args... )
+//#undef APP_LOG
+//#define APP_LOG(level, fmt, args... )
   
 #define LOG_HEAP(text) APP_LOG(APP_LOG_LEVEL_INFO, "heap: %d, used: %d, free: %d, %s %s",  heap_bytes_used()+heap_bytes_free(), heap_bytes_used(), heap_bytes_free(), __func__, text)
 
 static Window *window_menu;
+#ifdef PBL_SDK_3
+static StatusBarLayer *s_status_bar;
+#endif
 static MenuLayer *menu_layer;
 enum { // main menu structure
   MENU_SECTION_FAVS,
@@ -104,8 +107,7 @@ static GBitmap *bitmap_refresh;
 static uint8_t number_selected = 0;
 bool valid_selector;
 #define NUM_DIGITS 5
-#define NUMBER_OFFSET 24
-#define NUMBER_ORIGIN 2 // Action bar layer =20px wide
+#define NUMBER_ORIGIN 2 // Action bar layer =20px wide on Aplite =30px on Basalt, use ACTION_BAR_WIDTH 
 #define OPTION_TICK_SIZE 16
 
 static Window *window_distance;
@@ -711,7 +713,7 @@ static void menu_draw_header_callback(GContext* ctx, const Layer *cell_layer, ui
   }
 }
 
-static void menu_cell_draw_platform(GContext* ctx, const Layer *cell_layer, char *road, char *name) {
+static void menu_cell_draw_platform(GContext* ctx, /* MenuLayer *menu_layer, MenuIndex *cell_index,*/ const Layer *cell_layer, char *road, char *name) {
   
   GRect bounds = layer_get_frame(cell_layer);
   char road_only[MAX_ROAD_LENGTH+1];
@@ -725,7 +727,9 @@ static void menu_cell_draw_platform(GContext* ctx, const Layer *cell_layer, char
   GFont font_24_bold = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
   GFont font_18 = fonts_get_system_font(FONT_KEY_GOTHIC_18);
     
+#ifdef PBL_SDK_2
   graphics_context_set_text_color(ctx, GColorBlack);
+#endif
   graphics_draw_text(ctx, road_only, font_24_bold, GRect(4, -4, bounds.size.w-8-20, 4+18), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
   if (heading) graphics_draw_text(ctx, heading  , font_24_bold, GRect(bounds.size.w-30-4, -4, 30, 4+18), GTextOverflowModeFill, GTextAlignmentRight, NULL);
   graphics_draw_text(ctx, name     , font_18, GRect(4, 20, bounds.size.w-8, 14), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
@@ -835,7 +839,9 @@ static void menu_nearest_draw_row_callback(GContext* ctx, const Layer *cell_laye
     GFont font_24_bold = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
     GFont font_24 = fonts_get_system_font(FONT_KEY_GOTHIC_18);
     
-    graphics_context_set_text_color(ctx, GColorBlack);
+#ifdef PBL_SDK_2
+  graphics_context_set_text_color(ctx, GColorBlack);
+#endif
     graphics_draw_bitmap_in_rect(ctx, (check_if_favourite_route(routes[cell_index->row].Route) ? bitmap_option_tick : bitmap_option_box), GRect(2, (bounds.size.h-OPTION_TICK_SIZE)/2, OPTION_TICK_SIZE, OPTION_TICK_SIZE));
     graphics_draw_text(ctx, routes[cell_index->row].Route, font_24_bold, GRect(20, -2, 30, bounds.size.h-2), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
     graphics_draw_text(ctx, routes[cell_index->row].Destination, font_24, GRect(20+30+4, 3, bounds.size.w-20-30-4, bounds.size.h-2), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
@@ -848,7 +854,8 @@ static void menu_nearest_select_callback(MenuLayer *menu_layer, MenuIndex *cell_
     next_message_callback=&fetch_arrivals;
     add_platform(nearest[cell_index->row].Number,&nearest[cell_index->row].Name[offset], nearest[cell_index->row].Road); 
     window_stack_remove(window_menu, false /* Animated */);
-    window_stack_push(window_menu, false);
+    window_stack_push(window_menu, false /* Animated */);
+    //menu_layer_reload_data(menu_layer);
     window_stack_remove(window_menu_nearest, false /* Animated */);
     platform = num_platforms-1;
     window_stack_push(window_list, true /* Animated */);
@@ -1073,6 +1080,14 @@ static void scroll_layer_click_config_provider(void *context) {
 static void window_list_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_frame(window_layer);
+
+#ifdef PBL_SDK_3
+  s_status_bar = status_bar_layer_create();
+  layer_add_child(window_layer, status_bar_layer_get_layer(s_status_bar));
+  
+  bounds.origin.y += STATUS_BAR_LAYER_HEIGHT;
+  bounds.size.h -= STATUS_BAR_LAYER_HEIGHT;
+#endif  
   
   scroll_layer = scroll_layer_create(bounds);
   scroll_layer_set_click_config_onto_window(scroll_layer, window);
@@ -1109,6 +1124,9 @@ static void window_list_unload(Window *window) {
   }
   
   gbitmap_destroy(bitmap_bell);
+#ifdef PBL_SDK_3
+  status_bar_layer_destroy(s_status_bar);
+#endif  
 }
 
 // This initializes the menu upon window load
@@ -1192,12 +1210,11 @@ static void action_bar_select_click_handler() {
     strcat(nearest[0].Name, nearest[0].Number); // this is actually the bearing
     
     next_message_callback=&fetch_arrivals;
-    add_platform(number_selector, nearest[0].Road, nearest[0].Name); 
-    window_stack_remove(window_menu, false /* Animated */);
-    window_stack_push(window_menu, false);
+    add_platform(number_selector, nearest[0].Road, nearest[0].Name);
+    menu_layer_reload_data(menu_layer);
     window_stack_remove(window_number, false /* Animated */);
     platform = num_platforms-1;
-    window_stack_push(window_list, true /* Animated */);
+    window_stack_push(window_list, true /* Animated */); 
   }
   layer_mark_dirty(number_layer);
 }
@@ -1209,29 +1226,30 @@ static void action_bar_click_config_provider(void *context) {
 }
 
 static void number_layer_update_callback(Layer *layer, GContext *ctx) { // screen size = 144 x 168 px
-  //GRect bounds = layer_get_frame(layer);  
-  GFont font_numbers = fonts_get_system_font(FONT_KEY_BITHAM_34_MEDIUM_NUMBERS);
+  GRect bounds = layer_get_frame(layer);  
+  GFont font_numbers = fonts_get_system_font(/*FONT_KEY_GOTHIC_28*/ FONT_KEY_BITHAM_34_MEDIUM_NUMBERS);
   GFont font_gothic_18_bold = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
   GFont font_gothic_18 = fonts_get_system_font(FONT_KEY_GOTHIC_18);
-  GRect grect_add = GRect(27, 64, 70, 26);
+  GRect grect_add = GRect(bounds.origin.x+30, 64, bounds.size.w-2*30, 26);
+  uint number_offset = (bounds.size.w - 2*NUMBER_ORIGIN) / NUM_DIGITS;
   graphics_fill_rect(ctx, 
-                         (number_selected<NUM_DIGITS ? GRect(NUMBER_ORIGIN+number_selected*NUMBER_OFFSET,20, NUMBER_OFFSET, 44) : grect_add)
+                         (number_selected<NUM_DIGITS ? GRect(NUMBER_ORIGIN+number_selected*number_offset,20, number_offset, 44) : grect_add)
                           , 1, GCornersAll);
   
-  char number[2] = "1";
-  for (int a=0, x=NUMBER_ORIGIN; a<NUM_DIGITS; a++, x+=NUMBER_OFFSET) {
+  char number[2] = "0";
+  for (int a=0, x=NUMBER_ORIGIN; a<NUM_DIGITS; a++, x+=number_offset) {
     *number = number_selector[a];
     graphics_context_set_text_color(ctx, (a==number_selected?GColorWhite:GColorBlack));
-    graphics_draw_text(ctx, number, font_numbers, GRect(x,20, NUMBER_OFFSET, 44), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+    graphics_draw_text(ctx, number, font_numbers, GRect(x-5,20, number_offset+10, 44), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
   }
   grect_add.origin.y-=4;
   graphics_context_set_text_color(ctx, (NUM_DIGITS==number_selected?GColorWhite:GColorBlack));
   graphics_draw_text(ctx, (valid_selector ? "add ?":"check"), fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), grect_add, GTextOverflowModeFill, GTextAlignmentCenter, NULL); 
   
   graphics_context_set_text_color(ctx, GColorBlack);
-  graphics_draw_text(ctx, nearest[0].Name,   font_gothic_18_bold,  GRect(0,   90,  103, 20), GTextOverflowModeFill, GTextAlignmentLeft, NULL); 
-  graphics_draw_text(ctx, nearest[0].Number, font_gothic_18_bold,  GRect(103, 90,   21, 20), GTextOverflowModeFill, GTextAlignmentRight, NULL); 
-  graphics_draw_text(ctx, nearest[0].Road,   font_gothic_18,       GRect(0,   110, 124, 40), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+  graphics_draw_text(ctx, nearest[0].Name,   font_gothic_18_bold,  GRect(1,   90,  bounds.size.w-21, 20), GTextOverflowModeFill, GTextAlignmentLeft, NULL); 
+  graphics_draw_text(ctx, nearest[0].Number, font_gothic_18_bold,  GRect(bounds.size.w-21, 90,   20, 20), GTextOverflowModeFill, GTextAlignmentRight, NULL); 
+  graphics_draw_text(ctx, nearest[0].Road,   font_gothic_18,       GRect(bounds.origin.x+1,   110, bounds.size.w, 40), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
 }
 
 // This initializes the number upon window load
@@ -1242,20 +1260,33 @@ static void window_number_load(Window *window) {
   // In this case, it'll be the same as the window's
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_frame(window_layer);
+  
+  APP_LOG(APP_LOG_LEVEL_INFO, "Loading resources...");
   bitmap_up=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_UP);
   bitmap_down=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_DOWN);
   bitmap_right=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_RIGHT);
   bitmap_tick=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_TICK);
 
+  APP_LOG(APP_LOG_LEVEL_INFO, "Initialising action bar...");
   // Initialize the action bar:
   action_bar_layer = action_bar_layer_create();
+  APP_LOG(APP_LOG_LEVEL_INFO, "1...");
   action_bar_layer_add_to_window(action_bar_layer, window);
+  APP_LOG(APP_LOG_LEVEL_INFO, "2...");
   action_bar_layer_set_click_config_provider(action_bar_layer, action_bar_click_config_provider);
+  APP_LOG(APP_LOG_LEVEL_INFO, "3...");
   action_bar_layer_set_icon(action_bar_layer, BUTTON_ID_UP, bitmap_up);
   action_bar_layer_set_icon(action_bar_layer, BUTTON_ID_DOWN, bitmap_down);
   action_bar_layer_set_icon(action_bar_layer, BUTTON_ID_SELECT, bitmap_right);
+  APP_LOG(APP_LOG_LEVEL_INFO, "Initialising action bar animations...");
+#if PBL_SDK_3
+  action_bar_layer_set_icon_press_animation(action_bar_layer, BUTTON_ID_UP, ActionBarLayerIconPressAnimationMoveUp);
+  action_bar_layer_set_icon_press_animation(action_bar_layer, BUTTON_ID_DOWN, ActionBarLayerIconPressAnimationMoveDown);
+  action_bar_layer_set_icon_press_animation(action_bar_layer, BUTTON_ID_SELECT, ActionBarLayerIconPressAnimationMoveRight);
+#endif
   
   // Initialise the general graphics layer
+  bounds.size.w -= ACTION_BAR_WIDTH;
   number_layer = layer_create(bounds);
   layer_set_update_proc(number_layer, number_layer_update_callback);
   layer_add_child(window_layer, number_layer);
@@ -1280,21 +1311,21 @@ static void window_number_unload(Window *window) {
 }
 
 static void distance_layer_update_callback(Layer *layer, GContext *ctx) { // screen size = 144 x 168 px
-  //GRect bounds = layer_get_frame(layer);
+  GRect bounds = layer_get_frame(layer);
   
   GFont font_roboto_condensed_21 = fonts_get_system_font(FONT_KEY_ROBOTO_CONDENSED_21);
   GFont font_gothic_18 = fonts_get_system_font(FONT_KEY_GOTHIC_18);
-  GRect gr_road = GRect(3, 20, 118-17, 24);
-  GRect gr_name = GRect(3, 44, 118, 20);
-  GRect gr_heading = GRect(3+118-20, 20, 20, 24);
-  GRect gr_alarm = GRect(60, 125, 60, 21);
+  GRect gr_road = GRect(3, 20, bounds.size.w-2*3-17, 24);
+  GRect gr_heading = GRect(3+bounds.size.w-2*3-20, 20, 20, 24);
+  GRect gr_name = GRect(3, 44, bounds.size.w-2*3, 20);
+  GRect gr_alarm = GRect(60-7, 125, 60+7-9, 21);
   GRect gr_invert;
   char text[10];
   
   if (distance_selection==0) {
     gr_invert=GRect(gr_road.origin.x-1, gr_road.origin.y+5, gr_name.size.w+2, gr_name.origin.y+gr_name.size.h-gr_road.origin.y);
   } else if (distance_selection==1) {
-    gr_invert = GRect(64, 126, 58, 24);
+    gr_invert = GRect(64-7, 126, 58+7-9, 24);
   }
   graphics_fill_rect(ctx, gr_invert, 2, GCornersAll);
   
@@ -1318,11 +1349,11 @@ static void distance_layer_update_callback(Layer *layer, GContext *ctx) { // scr
   if (distance_refreshing) graphics_draw_bitmap_in_rect(ctx, bitmap_refresh, GRect(29-14-3,63+49/2-13/2+5,14,13));
   
   graphics_context_set_text_color(ctx, GColorBlack);
-  graphics_draw_text(ctx, "Distance to stop", font_gothic_18,  GRect(0, 0, 124, 21), GTextOverflowModeFill, GTextAlignmentCenter, NULL); 
+  graphics_draw_text(ctx, "Distance to stop", font_gothic_18,  GRect(0, 0, bounds.size.w, 21), GTextOverflowModeFill, GTextAlignmentCenter, NULL); 
   snprintf(text,10,"%d",platforms_distances[distance_alarm.Platform_index]);
-  graphics_draw_text(ctx, text, fonts_get_system_font(FONT_KEY_ROBOTO_BOLD_SUBSET_49), GRect(29, 63, 60, 49), GTextOverflowModeFill, GTextAlignmentRight, NULL); 
-  graphics_draw_text(ctx, "km", font_roboto_condensed_21, GRect(90, 90, 34, 23), GTextOverflowModeFill, GTextAlignmentLeft, NULL); 
-  graphics_draw_text(ctx, "Alarm:", font_roboto_condensed_21, GRect(0, 125, 58, 24), GTextOverflowModeFill, GTextAlignmentRight, NULL); 
+  graphics_draw_text(ctx, text, fonts_get_system_font(FONT_KEY_ROBOTO_BOLD_SUBSET_49), GRect(29-5, 63, 60, 49), GTextOverflowModeFill, GTextAlignmentRight, NULL); 
+  graphics_draw_text(ctx, "km", font_roboto_condensed_21, GRect(90-5, 90, 34, 23), GTextOverflowModeFill, GTextAlignmentLeft, NULL); 
+  graphics_draw_text(ctx, "Alarm:", font_roboto_condensed_21, GRect(0, 125, 56, 24), GTextOverflowModeFill, GTextAlignmentRight, NULL); 
   
   // DRAW HELP
   if (!(help_flags&HELP_FLAGS_DISTANCE)) { // intentional bit wise operator
@@ -1373,6 +1404,15 @@ static void window_distance_load(Window *window) {
   // In this case, it'll be the same as the window's  
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_frame(window_layer);
+
+#ifdef PBL_SDK_3
+  s_status_bar = status_bar_layer_create();
+  layer_add_child(window_layer, status_bar_layer_get_layer(s_status_bar));
+  
+  bounds.origin.y += STATUS_BAR_LAYER_HEIGHT;
+  bounds.size.h -= STATUS_BAR_LAYER_HEIGHT;
+#endif  
+  
   bitmap_up=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_UP);
   bitmap_down=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_DOWN);
   bitmap_right=gbitmap_create_with_resource(RESOURCE_ID_IMAGE_RIGHT);
@@ -1383,8 +1423,14 @@ static void window_distance_load(Window *window) {
   action_bar_layer_add_to_window(distance_action_bar_layer, window);
   action_bar_layer_set_click_config_provider(distance_action_bar_layer, distance_action_bar_click_config_provider);
   action_bar_layer_set_icon(distance_action_bar_layer, BUTTON_ID_SELECT, bitmap_right);
+#if PBL_SDK_3
+  action_bar_layer_set_icon_press_animation(distance_action_bar_layer, BUTTON_ID_UP, ActionBarLayerIconPressAnimationMoveUp);
+  action_bar_layer_set_icon_press_animation(distance_action_bar_layer, BUTTON_ID_DOWN, ActionBarLayerIconPressAnimationMoveDown);
+  action_bar_layer_set_icon_press_animation(distance_action_bar_layer, BUTTON_ID_SELECT, ActionBarLayerIconPressAnimationMoveRight);
+#endif
   
   // Initialise the general graphics layer
+  bounds.size.w -= ACTION_BAR_WIDTH;
   distance_layer = layer_create(bounds);
   layer_set_update_proc(distance_layer, distance_layer_update_callback);
   layer_add_child(window_layer, distance_layer);
@@ -1408,6 +1454,9 @@ static void window_distance_unload(Window *window) {
     persist_write_int(STORAGE_KEY_HELP_FLAGS, old_help_flags=help_flags);
     save_settings_to_phone();
   }
+#ifdef PBL_SDK_3
+  status_bar_layer_destroy(s_status_bar);
+#endif
 }
 
 // *****************************************************************************************************
@@ -1472,7 +1521,7 @@ static void init(void) {
   //app_message_register_inbox_dropped(inbox_dropped_handler); 
   app_message_register_outbox_failed(outbox_failed_handler);
   app_message_register_outbox_sent(outbox_sent_handler);
-  outbox_size=app_message_outbox_size_maximum();
+  outbox_size=636; //app_message_outbox_size_maximum();
   app_message_open(outbox_size, outbox_size);
   //APP_LOG(APP_LOG_LEVEL_INFO, "sizeof platforms:%d, arrivals:%d, outbox:%d", (int)sizeof(platforms), (int)sizeof(arrivals), outbox_size);
   

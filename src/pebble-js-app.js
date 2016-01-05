@@ -274,9 +274,9 @@ function get_platforms(reason) {
       reason='';
     }
   }
+  console.log("Fetching new platform data...");
   var req = new XMLHttpRequest();
   req.open('GET', 'http://rtt.metroinfo.org.nz/rtt/public/utility/file.aspx?ContentType=SQLXML&Name=JPPlatform', true);
-  console.log("Fetching new platform data...");
   req.onreadystatechange  = function(e) {
     if (req.readyState == 4) {
       if(req.status == 200) {
